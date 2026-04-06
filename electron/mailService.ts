@@ -5,14 +5,25 @@ import type {
   CreateAccountInput,
   CreateDraftInput,
   FetchMessageBodyInput,
+  FetchMessageBodyResult,
+  MessageMutationInput,
   MessageContentMode,
   RuntimeEnvironment,
+  SyncFolderInput,
   SmtpAuthMethod,
   TransportSecurity,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
 import type { InboxHeader } from "./providerClient.js";
-import { describeTransportError, fetchImapMessageBody, sendPlainTextMessage, verifyAccountConnection } from "./providerClient.js";
+import {
+  deleteImapMessage,
+  describeTransportError,
+  fetchImapFolderHeaders,
+  fetchImapMessageBody,
+  markImapMessageRead,
+  sendPlainTextMessage,
+  verifyAccountConnection
+} from "./providerClient.js";
 
 type Cipher = {
   isAvailable: () => boolean;
@@ -50,6 +61,7 @@ type MessageRow = {
   verified: number;
   content_mode: MessageContentMode;
   remote_message_ref?: string | null;
+  remote_uid?: number | null;
   remote_sequence?: number | null;
   remote_folder_name?: string | null;
   created_at: string;
@@ -223,6 +235,7 @@ export class MailService {
         verified INTEGER NOT NULL,
         content_mode TEXT NOT NULL DEFAULT 'plain',
         remote_message_ref TEXT,
+        remote_uid INTEGER,
         remote_sequence INTEGER,
         remote_folder_name TEXT,
         created_at TEXT NOT NULL,
@@ -292,6 +305,10 @@ export class MailService {
 
     if (!columns.has("remote_message_ref")) {
       this.database.exec("ALTER TABLE messages ADD COLUMN remote_message_ref TEXT;");
+    }
+
+    if (!columns.has("remote_uid")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN remote_uid INTEGER;");
     }
 
     if (!columns.has("remote_sequence")) {
@@ -654,6 +671,70 @@ export class MailService {
     return folder?.id ?? "";
   }
 
+  private findFolderRecord(accountId: string, folderName: string) {
+    return this.database
+      .prepare(
+        `
+          SELECT id, name, kind
+          FROM folders
+          WHERE account_id = ? AND name = ?
+          ORDER BY source DESC, sort_order ASC
+          LIMIT 1
+        `
+      )
+      .get(accountId, folderName) as
+      | {
+          id: string;
+          name: string;
+          kind: WorkspaceSnapshot["folders"][number]["kind"];
+        }
+      | undefined;
+  }
+
+  private updateAccountUnreadCount(accountId: string) {
+    const unread = this.database
+      .prepare("SELECT COUNT(*) AS count FROM messages WHERE account_id = ? AND unread = 1")
+      .get(accountId) as { count: number };
+
+    this.database.prepare("UPDATE accounts SET unread_count = ? WHERE id = ?").run(unread.count, accountId);
+  }
+
+  private removeLocalMessage(messageId: string, accountId: string) {
+    this.database.prepare("DELETE FROM messages WHERE id = ?").run(messageId);
+    this.pruneOrphanThreads();
+    this.updateAccountUnreadCount(accountId);
+  }
+
+  private getRemoteMessageRecord(accountId: string, messageId: string) {
+    return this.database
+      .prepare(
+        `
+          SELECT
+            id,
+            account_id AS accountId,
+            remote_message_ref AS remoteMessageRef,
+            remote_uid AS remoteUid,
+            remote_sequence AS remoteSequence,
+            remote_folder_name AS remoteFolderName,
+            content_mode AS contentMode
+          FROM messages
+          WHERE id = ? AND account_id = ?
+          LIMIT 1
+        `
+      )
+      .get(messageId, accountId) as
+      | {
+          id: string;
+          accountId: string;
+          remoteMessageRef?: string | null;
+          remoteUid?: number | null;
+          remoteSequence?: number | null;
+          remoteFolderName?: string | null;
+          contentMode: MessageContentMode;
+        }
+      | undefined;
+  }
+
   private pruneOrphanThreads() {
     this.database.exec(`
       DELETE FROM threads
@@ -664,13 +745,18 @@ export class MailService {
     `);
   }
 
-  private upsertInboxHeaders(accountId: string, folderId: string, folderName: string, headers: InboxHeader[]) {
+  private upsertRemoteHeaders(
+    accountId: string,
+    folderId: string,
+    folderName: string,
+    headers: InboxHeader[]
+  ) {
     const seenRemoteRefs = new Set<string>();
     const findExisting = this.database.prepare(
       `
         SELECT id, thread_id AS threadId, content_mode AS contentMode, body
         FROM messages
-        WHERE account_id = ? AND remote_message_ref = ?
+        WHERE account_id = ? AND (remote_uid = ? OR remote_message_ref = ?)
         LIMIT 1
       `
     );
@@ -683,9 +769,9 @@ export class MailService {
     const insertMessage = this.database.prepare(`
       INSERT INTO messages (
         id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-        unread, trust, sent_at, body, verified, content_mode, remote_message_ref, remote_sequence,
+        unread, trust, sent_at, body, verified, content_mode, remote_message_ref, remote_uid, remote_sequence,
         remote_folder_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateMessage = this.database.prepare(`
       UPDATE messages
@@ -701,6 +787,7 @@ export class MailService {
         trust = ?,
         sent_at = ?,
         verified = ?,
+        remote_uid = ?,
         remote_sequence = ?,
         remote_folder_name = ?
       WHERE id = ?
@@ -713,7 +800,7 @@ export class MailService {
       const sentAt = header.date || "Unknown date";
       const preview = `Header synced from IMAP. ${header.size} bytes on server.`;
       const participants = JSON.stringify([header.fromAddress || sender]);
-      const existing = findExisting.get(accountId, header.remoteMessageRef) as
+      const existing = findExisting.get(accountId, header.uid, header.remoteMessageRef) as
         | {
             id: string;
             threadId: string;
@@ -723,19 +810,20 @@ export class MailService {
         | undefined;
 
       if (existing) {
-        updateThread.run(header.subject, "Inbox", participants, existing.threadId);
+        updateThread.run(header.subject, folderName, participants, existing.threadId);
         updateMessage.run(
           folderId,
           sender,
           header.fromAddress || sender,
           header.subject,
           preview,
-          "Inbox",
+          folderName,
           formatMailListTime(header.date),
           header.unread ? 1 : 0,
           "review",
           sentAt,
           1,
+          header.uid,
           header.sequence,
           folderName,
           existing.id
@@ -745,7 +833,7 @@ export class MailService {
 
       const createdAt = nowIso();
       const threadId = makeId("thread");
-      insertThread.run(threadId, header.subject, "Inbox", participants, createdAt);
+      insertThread.run(threadId, header.subject, folderName, participants, createdAt);
       insertMessage.run(
         makeId("message"),
         threadId,
@@ -755,7 +843,7 @@ export class MailService {
         header.fromAddress || sender,
         header.subject,
         preview,
-        "Inbox",
+        folderName,
         formatMailListTime(header.date),
         header.unread ? 1 : 0,
         "review",
@@ -764,6 +852,7 @@ export class MailService {
         1,
         "remote-pending",
         header.remoteMessageRef,
+        header.uid,
         header.sequence,
         folderName,
         createdAt
@@ -797,6 +886,7 @@ export class MailService {
     }
 
     this.pruneOrphanThreads();
+    this.updateAccountUnreadCount(accountId);
   }
 
   private replaceRemoteFolders(
@@ -997,7 +1087,7 @@ export class MailService {
         this.findFolderId(accountId, "inbox", inboxFolder.name) || this.findFolderId(accountId, "inbox");
 
       if (inboxFolderId) {
-        this.upsertInboxHeaders(accountId, inboxFolderId, inboxFolder.name, summary.imap.headers);
+        this.upsertRemoteHeaders(accountId, inboxFolderId, inboxFolder.name, summary.imap.headers);
       }
 
       this.database
@@ -1122,27 +1212,51 @@ export class MailService {
     }
   }
 
-  async fetchMessageBody(input: FetchMessageBodyInput, context: WorkspaceContext) {
-    const remoteMessage = this.database
-      .prepare(`
-        SELECT
-          id,
-          account_id AS accountId,
-          remote_sequence AS remoteSequence,
-          remote_folder_name AS remoteFolderName,
-          content_mode AS contentMode
-        FROM messages
-        WHERE id = ?
-      `)
-      .get(input.messageId) as
-      | {
-          id: string;
-          accountId: string;
-          remoteSequence?: number | null;
-          remoteFolderName?: string | null;
-          contentMode: MessageContentMode;
-        }
-      | undefined;
+  async syncFolder(input: SyncFolderInput, context: WorkspaceContext) {
+    const account = this.getAccountPassword(input.accountId);
+    const folderRecord =
+      this.findFolderRecord(input.accountId, input.folderName) ??
+      ({
+        id: this.ensureFolder(input.accountId, input.folderName, "custom", "remote"),
+        name: input.folderName,
+        kind: "custom" as const
+      });
+
+    try {
+      const summary = await fetchImapFolderHeaders({
+        username: account.username,
+        password: account.password,
+        incomingServer: account.incomingServer,
+        incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
+        folderName: input.folderName,
+        limit: 50
+      });
+
+      this.upsertRemoteHeaders(input.accountId, folderRecord.id, folderRecord.name, summary.headers);
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("online", `Synced ${displayTime()}`, input.accountId);
+      this.addSyncJob(`Folder sync for ${account.address}`, `${input.folderName} refreshed from IMAP.`, "complete");
+      this.addLedgerEntry(
+        "Folder sync completed",
+        `${account.address} refreshed ${input.folderName} and stored ${summary.headers.length} headers locally.`,
+        "info"
+      );
+
+      return this.getWorkspaceSnapshot(context);
+    } catch (error) {
+      const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("attention", `Sync failed ${displayTime()}`, input.accountId);
+      this.addLedgerEntry("Folder sync failed", `${account.address}: ${message}`, "critical");
+      throw new Error(message);
+    }
+  }
+
+  async fetchMessageBody(input: FetchMessageBodyInput, _context: WorkspaceContext): Promise<FetchMessageBodyResult> {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
       throw new Error("Unknown message.");
@@ -1153,29 +1267,37 @@ export class MailService {
     }
 
     if (remoteMessage.contentMode !== "remote-pending") {
-      return this.getWorkspaceSnapshot(context);
+      const currentBody = this.database
+        .prepare("SELECT body FROM messages WHERE id = ?")
+        .get(input.messageId) as { body: string } | undefined;
+
+      return {
+        body: currentBody?.body ?? "",
+        html: null
+      };
     }
 
-    if (!remoteMessage.remoteSequence || !remoteMessage.remoteFolderName) {
+    if (!remoteMessage.remoteUid || !remoteMessage.remoteFolderName) {
       throw new Error("This message does not have a remote IMAP body to fetch.");
     }
 
     const account = this.getAccountPassword(remoteMessage.accountId);
 
     try {
-      const body = await fetchImapMessageBody({
+      const fetchedContent = await fetchImapMessageBody({
         username: account.username,
         password: account.password,
         incomingServer: account.incomingServer,
         incomingPort: account.incomingPort,
         incomingSecurity: account.incomingSecurity,
         folderName: remoteMessage.remoteFolderName,
-        sequence: remoteMessage.remoteSequence
+        uid: remoteMessage.remoteUid
       });
+      const contentMode: MessageContentMode = fetchedContent.html ? "html-blocked" : "plain";
 
       this.database
         .prepare("UPDATE messages SET body = ?, content_mode = ? WHERE id = ?")
-        .run(body, "plain", input.messageId);
+        .run(fetchedContent.body, contentMode, input.messageId);
 
       this.addLedgerEntry(
         "Message body fetched from IMAP",
@@ -1183,7 +1305,7 @@ export class MailService {
         "info"
       );
 
-      return this.getWorkspaceSnapshot(context);
+      return fetchedContent;
     } catch (error) {
       const message = describeTransportError(
         error,
@@ -1194,6 +1316,80 @@ export class MailService {
       this.addLedgerEntry("Message body fetch failed", `${account.address}: ${message}`, "critical");
       throw new Error(message);
     }
+  }
+
+  async deleteMessage(input: MessageMutationInput, context: WorkspaceContext) {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    if (remoteMessage.accountId !== input.accountId) {
+      throw new Error("Message does not belong to the requested account.");
+    }
+
+    if (!remoteMessage.remoteUid || !remoteMessage.remoteFolderName) {
+      this.removeLocalMessage(input.messageId, input.accountId);
+      return this.getWorkspaceSnapshot(context);
+    }
+
+    const account = this.getAccountPassword(input.accountId);
+
+    try {
+      await deleteImapMessage({
+        username: account.username,
+        password: account.password,
+        incomingServer: account.incomingServer,
+        incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
+        folderName: remoteMessage.remoteFolderName,
+        uid: remoteMessage.remoteUid
+      });
+      this.removeLocalMessage(input.messageId, input.accountId);
+      this.addLedgerEntry("Message deleted", `${account.address} deleted a message from ${remoteMessage.remoteFolderName}.`, "info");
+      return this.getWorkspaceSnapshot(context);
+    } catch (error) {
+      const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+      this.addLedgerEntry("Message delete failed", `${account.address}: ${message}`, "critical");
+      throw new Error(message);
+    }
+  }
+
+  async markRead(input: MessageMutationInput, context: WorkspaceContext) {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    if (remoteMessage.accountId !== input.accountId) {
+      throw new Error("Message does not belong to the requested account.");
+    }
+
+    if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
+      const account = this.getAccountPassword(input.accountId);
+
+      try {
+        await markImapMessageRead({
+          username: account.username,
+          password: account.password,
+          incomingServer: account.incomingServer,
+          incomingPort: account.incomingPort,
+          incomingSecurity: account.incomingSecurity,
+          folderName: remoteMessage.remoteFolderName,
+          uid: remoteMessage.remoteUid
+        });
+      } catch (error) {
+        const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+        this.addLedgerEntry("Mark read failed", `${account.address}: ${message}`, "critical");
+        throw new Error(message);
+      }
+    }
+
+    this.database.prepare("UPDATE messages SET unread = 0 WHERE id = ?").run(input.messageId);
+    this.updateAccountUnreadCount(input.accountId);
+    return this.getWorkspaceSnapshot(context);
   }
 
   close() {

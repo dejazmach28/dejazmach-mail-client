@@ -349,6 +349,50 @@ app.whenReady().then(async () => {
     } catch (error) {
       return {
         ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
+
+  ipcMain.handle("app:sync-folder", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().syncFolder(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:delete-message", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().deleteMessage(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:mark-read", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().markRead(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
         error: getErrorMessage(error),
         data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
       };

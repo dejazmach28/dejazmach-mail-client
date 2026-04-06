@@ -147,6 +147,21 @@ export type FetchMessageBodyInput = {
   messageId: string;
 };
 
+export type FetchMessageBodyResult = {
+  body: string;
+  html: string | null;
+};
+
+export type SyncFolderInput = {
+  accountId: string;
+  folderName: string;
+};
+
+export type MessageMutationInput = {
+  accountId: string;
+  messageId: string;
+};
+
 export type ActionResult<T> =
   | {
       ok: true;
@@ -164,5 +179,8 @@ export type DesktopApi = {
   createDraft: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   verifyAccount: (accountId: string) => Promise<ActionResult<WorkspaceSnapshot>>;
   sendMessage: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
-  fetchMessageBody: (input: FetchMessageBodyInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  fetchMessageBody: (input: FetchMessageBodyInput) => Promise<ActionResult<FetchMessageBodyResult>>;
+  syncFolder: (input: SyncFolderInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  deleteMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  markRead: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
 };

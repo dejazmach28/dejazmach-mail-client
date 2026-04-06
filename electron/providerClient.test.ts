@@ -26,10 +26,11 @@ test("parseImapListLine extracts folder name and attributes", () => {
 test("parseImapFetchEnvelope extracts inbox header fields", () => {
   assert.deepEqual(
     parseImapFetchEnvelope(
-      '* 42 FETCH (RFC822.SIZE 2048 FLAGS (\\Seen) ENVELOPE ("Mon, 01 Apr 2024 10:00:00 +0000" "Weekly report" (("Jane Sender" NIL "jane" "example.com")) NIL NIL NIL NIL NIL NIL "<message-42@example.com>"))'
+      '* 42 FETCH (UID 2042 RFC822.SIZE 2048 FLAGS (\\Seen) ENVELOPE ("Mon, 01 Apr 2024 10:00:00 +0000" "Weekly report" (("Jane Sender" NIL "jane" "example.com")) NIL NIL NIL NIL NIL NIL "<message-42@example.com>"))'
     ),
     {
       sequence: 42,
+      uid: 2042,
       remoteMessageRef: "<message-42@example.com>",
       subject: "Weekly report",
       fromName: "Jane Sender",

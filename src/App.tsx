@@ -3,6 +3,7 @@ import type {
   ActionResult,
   CreateAccountInput,
   CreateDraftInput,
+  FetchMessageBodyResult,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
 import { ComposePanel } from "./components/ComposePanel.js";
@@ -105,7 +106,7 @@ const getFirstThreadId = (workspace: WorkspaceSnapshot, accountId: string, folde
   );
 };
 
-const unwrapResult = (result: ActionResult<WorkspaceSnapshot>) => {
+const unwrapResult = <T,>(result: ActionResult<T>) => {
   if (!result.ok) {
     throw new Error(result.error);
   }
@@ -129,6 +130,26 @@ const quoteBody = (body: string) =>
 
 const buildQuotedReplyBody = (sentAt: string, sender: string, body: string) =>
   `\n\n> On ${sentAt}, ${sender} wrote:\n${quoteBody(body)}`;
+
+const applyFetchedMessageBody = (
+  workspace: WorkspaceSnapshot,
+  messageId: string,
+  fetchedMessage: FetchMessageBodyResult
+): WorkspaceSnapshot => ({
+  ...workspace,
+  threads: workspace.threads.map((thread) => ({
+    ...thread,
+    messages: thread.messages.map((message) =>
+      message.id === messageId
+        ? {
+            ...message,
+            body: fetchedMessage.body,
+            contentMode: fetchedMessage.html ? "html-blocked" : "plain"
+          }
+        : message
+    )
+  }))
+});
 
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
@@ -305,7 +326,8 @@ function App() {
     try {
       const result = await window.desktopApi.fetchMessageBody({ accountId, messageId });
       if (result.data) {
-        applyWorkspace(result.data);
+        const fetchedMessage = result.data;
+        setWorkspace((currentWorkspace) => applyFetchedMessageBody(currentWorkspace, messageId, fetchedMessage));
       }
       unwrapResult(result);
     } catch (error) {
