@@ -251,6 +251,9 @@ function App() {
   const unreadCount = workspace.messages.filter((message) => message.unread).length;
   const runningSyncJobs = workspace.syncJobs.filter((job) => job.status === "running").length;
   const transparencyCount = workspace.shellState.transparencyLedger.length;
+  const selectedFolder =
+    workspace.folders.find((folder) => folder.id === selectedFolderId) ?? workspace.folders[0];
+  const activeAccountCount = workspace.accounts.filter((account) => account.status !== "attention").length;
 
   const handleAccountSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -381,85 +384,95 @@ function App() {
         </div>
       ) : null}
 
-      <section className="top-banner">
-        <article className="glass-card hero-card">
-          <div className="hero-copy">
-            <span className="eyebrow">DejAzmach secure desktop mail</span>
-            <h1>Mail that exposes its trust surface.</h1>
+      <header className="app-header glass-card">
+        <div className="brand-panel">
+          <div className="brand-mark" aria-hidden="true">
+            D
+          </div>
+          <div className="brand-copy">
+            <span className="eyebrow">DejAzmach desktop mail</span>
+            <h1>{selectedFolder?.name ?? "Inbox"}</h1>
             <p>
-              A desktop-first foundation for a serious mail client: strong Electron boundaries,
-              visible account and sync state, persisted local workspace data, and a transparency
-              ledger that explains what the app is doing instead of asking the user to assume.
+              A clearer desktop workspace for real mail work: account health on the left,
+              message flow in the middle, and conversation detail without visual clutter.
             </p>
           </div>
+        </div>
 
-          <div className="hero-metrics">
-            <div className="metric-card">
-              <span className="card-label">Secure desktop mode</span>
-              <strong>{workspace.shellState.secureDesktopMode ? "Enabled" : "Unavailable"}</strong>
-              <p>Renderer APIs are reduced to a typed preload contract.</p>
-            </div>
+        <div className="search-card" aria-hidden="true">
+          <span className="search-placeholder">Search and shortcuts</span>
+          <small>Layout reserved for command palette and indexed search.</small>
+        </div>
 
-            <div className="metric-card accent-card">
-              <span className="card-label">Unread priority</span>
-              <strong>{unreadCount} messages</strong>
-              <p>Unread and security-sensitive mail stays visible from the first screen.</p>
-            </div>
-
-            <div className="metric-card">
-              <span className="card-label">Transparency events</span>
-              <strong>{transparencyCount} entries</strong>
-              <p>Every trust-relevant behavior should become inspectable product state.</p>
-            </div>
+        <div className="header-stats">
+          <div className="header-stat">
+            <span className="card-label">Unread</span>
+            <strong>{unreadCount}</strong>
+            <p>Messages that still need attention.</p>
           </div>
-        </article>
-
-        <article className="glass-card command-card">
-          <div className="section-heading">
-            <div>
-              <span className="card-label">System</span>
-              <h2>Shell posture</h2>
-            </div>
-            <span className="status-pill status-pill-active">desktop</span>
+          <div className="header-stat">
+            <span className="card-label">Accounts</span>
+            <strong>{activeAccountCount}</strong>
+            <p>Healthy or syncing mailboxes.</p>
           </div>
-
-          <div className="command-list">
-            <div>
-              <span className="card-label">Platform</span>
-              <strong>{formatPlatform(workspace.shellState.platform)}</strong>
-            </div>
-            <div>
-              <span className="card-label">Version</span>
-              <strong>{workspace.shellState.version}</strong>
-            </div>
-            <div>
-              <span className="card-label">Runtime</span>
-              <strong>{workspace.shellState.packaged ? "Packaged build" : "Developer shell"}</strong>
-            </div>
-            <div>
-              <span className="card-label">Live sync jobs</span>
-              <strong>{runningSyncJobs}</strong>
-            </div>
+          <div className="header-stat">
+            <span className="card-label">Runtime</span>
+            <strong>{workspace.shellState.packaged ? "Desktop build" : "Dev shell"}</strong>
+            <p>
+              {formatPlatform(workspace.shellState.platform)} · {workspace.shellState.version}
+            </p>
           </div>
+        </div>
+      </header>
 
-          <div className="command-pills">
-            <span className={environmentClassMap[workspace.shellState.environment]}>
-              {workspace.shellState.environment}
-            </span>
-            <span className="mini-pill mini-pill-neutral">{formatPlatform(workspace.shellState.platform)}</span>
-          </div>
-
+      {loadError || actionError || actionNotice ? (
+        <section className="notice-strip">
           {loadError ? <p className="inline-notice">{loadError}</p> : null}
           {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
           {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
-        </article>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="desktop-grid">
-        <aside className="glass-card sidebar">
-          <section>
-            <span className="card-label">Accounts</span>
-            <h2>Command deck</h2>
+      <section className="mail-layout">
+        <aside className="glass-card nav-panel">
+          <section className="panel-section workspace-summary">
+            <span className="card-label">Workspace</span>
+            <h2>Mailboxes</h2>
+
+            <div className="summary-grid">
+              <div className="summary-card">
+                <strong>{workspace.accounts.length}</strong>
+                <span>configured</span>
+              </div>
+              <div className="summary-card">
+                <strong>{runningSyncJobs}</strong>
+                <span>active sync jobs</span>
+              </div>
+              <div className="summary-card">
+                <strong>{transparencyCount}</strong>
+                <span>ledger events</span>
+              </div>
+            </div>
+
+            <div className="command-pills">
+              <span className={environmentClassMap[workspace.shellState.environment]}>
+                {workspace.shellState.environment}
+              </span>
+              <span className="mini-pill mini-pill-neutral">{formatPlatform(workspace.shellState.platform)}</span>
+              <span className="mini-pill mini-pill-success">
+                {workspace.shellState.secureDesktopMode ? "desktop mode" : "preview"}
+              </span>
+            </div>
+          </section>
+
+          <section className="panel-section">
+            <div className="section-heading compact-heading">
+              <div>
+                <span className="card-label">Accounts</span>
+                <h2>Connected inboxes</h2>
+              </div>
+            </div>
+
             <div className="account-list">
               {workspace.accounts.map((account) => (
                 <article className="account-card" key={account.id}>
@@ -470,28 +483,37 @@ function App() {
                     </div>
                     <span className={accountClassMap[account.status]}>{account.status}</span>
                   </div>
+
                   <div className="account-meta">
                     <span>{account.provider}</span>
                     <span>{account.unreadCount} unread</span>
                   </div>
+
                   <p className="account-footnote">
-                    Last sync {account.lastSync}. Storage: {account.storage}.
+                    Last sync {account.lastSync}. Secrets stored in {account.storage}.
                   </p>
+
                   <button
                     className="secondary-button"
                     disabled={verifyingAccountId === account.id}
                     onClick={() => void handleVerifyAccount(account.id)}
                     type="button"
                   >
-                    {verifyingAccountId === account.id ? "Verifying..." : "Verify & sync"}
+                    {verifyingAccountId === account.id ? "Verifying..." : "Verify account"}
                   </button>
                 </article>
               ))}
             </div>
           </section>
 
-          <section>
-            <span className="card-label">Folders</span>
+          <section className="panel-section">
+            <div className="section-heading compact-heading">
+              <div>
+                <span className="card-label">Folders</span>
+                <h2>Navigation</h2>
+              </div>
+            </div>
+
             <div className="folder-list" aria-label="Folders">
               {workspace.folders.map((folder) => (
                 <button
@@ -506,122 +528,27 @@ function App() {
                   }}
                   type="button"
                 >
-                  <span>{folder.name}</span>
-                  <span>{folder.count}</span>
+                  <span className="folder-copy">
+                    <strong>{folder.name}</strong>
+                    <small>{folder.kind}</small>
+                  </span>
+                  <span className="folder-count">{folder.count}</span>
                 </button>
               ))}
             </div>
           </section>
-
-          <section className="form-card">
-            <div className="section-heading">
-              <div>
-                <span className="card-label">Account onboarding</span>
-                <h2>Local vault</h2>
-              </div>
-            </div>
-
-            <form className="stack-form" onSubmit={handleAccountSubmit}>
-              <div className="form-grid">
-                <label className="field">
-                  <span>Name</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))}
-                    required
-                    value={accountForm.name}
-                  />
-                </label>
-                <label className="field">
-                  <span>Address</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, address: event.target.value }))}
-                    required
-                    type="email"
-                    value={accountForm.address}
-                  />
-                </label>
-                <label className="field">
-                  <span>Provider</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, provider: event.target.value }))}
-                    required
-                    value={accountForm.provider}
-                  />
-                </label>
-                <label className="field">
-                  <span>Username</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))}
-                    required
-                    value={accountForm.username}
-                  />
-                </label>
-                <label className="field">
-                  <span>Incoming host</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, incomingServer: event.target.value }))}
-                    required
-                    value={accountForm.incomingServer}
-                  />
-                </label>
-                <label className="field">
-                  <span>Outgoing host</span>
-                  <input
-                    onChange={(event) => setAccountForm((current) => ({ ...current, outgoingServer: event.target.value }))}
-                    required
-                    value={accountForm.outgoingServer}
-                  />
-                </label>
-                <label className="field">
-                  <span>Incoming port</span>
-                  <input
-                    min={1}
-                    onChange={(event) =>
-                      setAccountForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
-                    }
-                    required
-                    type="number"
-                    value={accountForm.incomingPort}
-                  />
-                </label>
-                <label className="field">
-                  <span>Outgoing port</span>
-                  <input
-                    min={1}
-                    onChange={(event) =>
-                      setAccountForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
-                    }
-                    required
-                    type="number"
-                    value={accountForm.outgoingPort}
-                  />
-                </label>
-              </div>
-
-              <label className="field">
-                <span>Password</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))}
-                  required
-                  type="password"
-                  value={accountForm.password}
-                />
-              </label>
-
-              <button className="primary-button" disabled={isSavingAccount} type="submit">
-                {isSavingAccount ? "Storing account..." : "Store in local vault"}
-              </button>
-            </form>
-          </section>
         </aside>
 
-        <section className="glass-card inbox-panel">
+        <section className="glass-card mail-panel">
           <header className="section-heading">
             <div>
-              <span className="card-label">Inbox</span>
-              <h2>Visible operations</h2>
+              <span className="card-label">Message list</span>
+              <h2>{selectedFolder?.name ?? "Inbox"}</h2>
             </div>
-            <span className="mini-pill mini-pill-neutral">{visibleMessages.length} threads</span>
+            <div className="list-meta">
+              <span className="mini-pill mini-pill-neutral">{visibleMessages.length} conversations</span>
+              <span className="mini-pill mini-pill-warning">{unreadCount} unread</span>
+            </div>
           </header>
 
           <div className="message-list">
@@ -650,17 +577,32 @@ function App() {
           </div>
         </section>
 
-        <section className="detail-stack">
+        <section className="reader-column">
           <article className="glass-card thread-card">
             <header className="section-heading">
               <div>
-                <span className="card-label">Thread</span>
+                <span className="card-label">Conversation</span>
                 <h2>{selectedThread?.subject ?? "No thread selected"}</h2>
               </div>
               {selectedThread ? (
                 <span className="mini-pill mini-pill-neutral">{selectedThread.classification}</span>
               ) : null}
             </header>
+
+            <div className="thread-summary">
+              <div className="thread-summary-card">
+                <span className="card-label">Participants</span>
+                <strong>{selectedThread?.participants.length ?? 0}</strong>
+              </div>
+              <div className="thread-summary-card">
+                <span className="card-label">Messages</span>
+                <strong>{selectedThread?.messages.length ?? 0}</strong>
+              </div>
+              <div className="thread-summary-card">
+                <span className="card-label">Current folder</span>
+                <strong>{selectedFolder?.name ?? "Unknown"}</strong>
+              </div>
+            </div>
 
             <div className="participants">
               {selectedThread?.participants.map((participant) => (
@@ -698,36 +640,12 @@ function App() {
             </div>
           </article>
 
-          <div className="detail-grid">
-            <article className="glass-card security-card">
-              <header className="section-heading">
-                <div>
-                  <span className="card-label">Security posture</span>
-                  <h2>Trust surface</h2>
-                </div>
-              </header>
-
-              <div className="security-list">
-                {workspace.shellState.securityMetrics.map((metric) => (
-                  <div className="security-row" key={metric.label}>
-                    <div>
-                      <strong>{metric.label}</strong>
-                      <p>{metric.detail}</p>
-                    </div>
-                    <div className="security-side">
-                      <span className={securityClassMap[metric.status]}>{metric.status}</span>
-                      <span className="security-value">{metric.value}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </article>
-
-            <article className="glass-card sync-card">
+          <div className="reader-support-grid">
+            <article className="glass-card compose-card">
               <header className="section-heading">
                 <div>
                   <span className="card-label">Compose</span>
-                  <h2>Drafts</h2>
+                  <h2>Draft message</h2>
                 </div>
               </header>
 
@@ -773,112 +691,243 @@ function App() {
                   />
                 </label>
 
-                <button className="primary-button" disabled={isSavingDraft} type="submit">
-                  {isSavingDraft ? "Saving draft..." : "Persist draft locally"}
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={isSendingMessage}
-                  onClick={() => void handleSendMessage()}
-                  type="button"
-                >
-                  {isSendingMessage ? "Sending..." : "Send now"}
-                </button>
+                <div className="button-row">
+                  <button className="primary-button" disabled={isSavingDraft} type="submit">
+                    {isSavingDraft ? "Saving draft..." : "Save draft"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={isSendingMessage}
+                    onClick={() => void handleSendMessage()}
+                    type="button"
+                  >
+                    {isSendingMessage ? "Sending..." : "Send now"}
+                  </button>
+                </div>
               </form>
             </article>
-          </div>
 
-          <article className="glass-card ledger-card">
-            <header className="section-heading">
+            <article className="glass-card trust-card">
+              <section className="support-section">
+                <header className="section-heading compact-heading">
+                  <div>
+                    <span className="card-label">Security</span>
+                    <h2>Trust state</h2>
+                  </div>
+                </header>
+
+                <div className="security-list">
+                  {workspace.shellState.securityMetrics.map((metric) => (
+                    <div className="security-row" key={metric.label}>
+                      <div>
+                        <strong>{metric.label}</strong>
+                        <p>{metric.detail}</p>
+                      </div>
+                      <div className="security-side">
+                        <span className={securityClassMap[metric.status]}>{metric.status}</span>
+                        <span className="security-value">{metric.value}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="support-section support-section-border">
+                <header className="section-heading compact-heading">
+                  <div>
+                    <span className="card-label">Sync</span>
+                    <h2>Queue</h2>
+                  </div>
+                </header>
+
+                <div className="sync-list">
+                  {workspace.syncJobs.map((job) => (
+                    <div className="sync-row" key={job.id}>
+                      <div>
+                        <strong>{job.title}</strong>
+                        <p>{job.detail}</p>
+                      </div>
+                      <div className="security-side">
+                        <span className={syncClassMap[job.status]}>{job.status}</span>
+                        <span className="security-value">{job.time}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section className="workspace-footer">
+        <article className="glass-card setup-card">
+          <header className="section-heading">
+            <div>
+              <span className="card-label">Account onboarding</span>
+              <h2>Add mailbox</h2>
+            </div>
+          </header>
+
+          <form className="stack-form" onSubmit={handleAccountSubmit}>
+            <div className="form-grid">
+              <label className="field">
+                <span>Name</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))}
+                  required
+                  value={accountForm.name}
+                />
+              </label>
+              <label className="field">
+                <span>Address</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, address: event.target.value }))}
+                  required
+                  type="email"
+                  value={accountForm.address}
+                />
+              </label>
+              <label className="field">
+                <span>Provider</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, provider: event.target.value }))}
+                  required
+                  value={accountForm.provider}
+                />
+              </label>
+              <label className="field">
+                <span>Username</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))}
+                  required
+                  value={accountForm.username}
+                />
+              </label>
+              <label className="field">
+                <span>Incoming host</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, incomingServer: event.target.value }))}
+                  required
+                  value={accountForm.incomingServer}
+                />
+              </label>
+              <label className="field">
+                <span>Outgoing host</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, outgoingServer: event.target.value }))}
+                  required
+                  value={accountForm.outgoingServer}
+                />
+              </label>
+              <label className="field">
+                <span>Incoming port</span>
+                <input
+                  min={1}
+                  onChange={(event) =>
+                    setAccountForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
+                  }
+                  required
+                  type="number"
+                  value={accountForm.incomingPort}
+                />
+              </label>
+              <label className="field">
+                <span>Outgoing port</span>
+                <input
+                  min={1}
+                  onChange={(event) =>
+                    setAccountForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
+                  }
+                  required
+                  type="number"
+                  value={accountForm.outgoingPort}
+                />
+              </label>
+            </div>
+
+            <label className="field">
+              <span>Password</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))}
+                required
+                type="password"
+                value={accountForm.password}
+              />
+            </label>
+
+            <button className="primary-button" disabled={isSavingAccount} type="submit">
+              {isSavingAccount ? "Storing account..." : "Store in local vault"}
+            </button>
+          </form>
+        </article>
+
+        <article className="glass-card ledger-card">
+          <header className="section-heading">
+            <div>
+              <span className="card-label">Transparency</span>
+              <h2>Session ledger</h2>
+            </div>
+          </header>
+
+          <div className="ledger-list">
+            {workspace.shellState.transparencyLedger.map((entry) => (
+              <article className="ledger-entry" key={entry.id}>
+                <div className="ledger-topline">
+                  <div>
+                    <strong>{entry.title}</strong>
+                    <p>{entry.detail}</p>
+                  </div>
+                  <div className="security-side">
+                    <span className={ledgerClassMap[entry.severity]}>{entry.severity}</span>
+                    <span className="security-value">{entry.occurredAt}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="glass-card operations-card">
+          <section className="support-section">
+            <header className="section-heading compact-heading">
               <div>
-                <span className="card-label">Transparency</span>
-                <h2>Session ledger</h2>
+                <span className="card-label">Release targets</span>
+                <h2>Cross-platform</h2>
               </div>
             </header>
 
-            <div className="ledger-list">
-              {workspace.shellState.transparencyLedger.map((entry) => (
-                <article className="ledger-entry" key={entry.id}>
-                  <div className="ledger-topline">
-                    <div>
-                      <strong>{entry.title}</strong>
-                      <p>{entry.detail}</p>
-                    </div>
-                    <div className="security-side">
-                      <span className={ledgerClassMap[entry.severity]}>{entry.severity}</span>
-                      <span className="security-value">{entry.occurredAt}</span>
-                    </div>
+            <div className="release-list">
+              {workspace.shellState.releaseTargets.map((target) => (
+                <article className="release-row" key={target.os}>
+                  <div>
+                    <strong>{target.os}</strong>
+                    <p>{target.note}</p>
+                  </div>
+                  <div className="security-side">
+                    <span className={releaseTargetClassMap[target.status]}>{target.status}</span>
+                    <span className="security-value">{target.formats.join(", ")}</span>
                   </div>
                 </article>
               ))}
             </div>
-          </article>
+          </section>
 
-          <div className="detail-grid">
-            <article className="glass-card release-card">
-              <header className="section-heading">
-                <div>
-                  <span className="card-label">Release targets</span>
-                  <h2>Cross-platform build</h2>
-                </div>
-              </header>
-
-              <div className="release-list">
-                {workspace.shellState.releaseTargets.map((target) => (
-                  <article className="release-row" key={target.os}>
-                    <div>
-                      <strong>{target.os}</strong>
-                      <p>{target.note}</p>
-                    </div>
-                    <div className="security-side">
-                      <span className={releaseTargetClassMap[target.status]}>{target.status}</span>
-                      <span className="security-value">{target.formats.join(", ")}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </article>
-
-            <article className="glass-card release-card">
-              <header className="section-heading">
-                <div>
-                  <span className="card-label">Shell capabilities</span>
-                  <h2>Production foundation</h2>
-                </div>
-              </header>
-
-              <ul className="capability-list">
-                {workspace.shellState.capabilities.map((capability) => (
-                  <li key={capability}>{capability}</li>
-                ))}
-              </ul>
-            </article>
-          </div>
-
-          <article className="glass-card sync-card">
-            <header className="section-heading">
+          <section className="support-section support-section-border">
+            <header className="section-heading compact-heading">
               <div>
-                <span className="card-label">Sync</span>
-                <h2>Queue state</h2>
+                <span className="card-label">Shell capabilities</span>
+                <h2>Foundation</h2>
               </div>
             </header>
 
-            <div className="sync-list">
-              {workspace.syncJobs.map((job) => (
-                <div className="sync-row" key={job.id}>
-                  <div>
-                    <strong>{job.title}</strong>
-                    <p>{job.detail}</p>
-                  </div>
-                  <div className="security-side">
-                    <span className={syncClassMap[job.status]}>{job.status}</span>
-                    <span className="security-value">{job.time}</span>
-                  </div>
-                </div>
+            <ul className="capability-list">
+              {workspace.shellState.capabilities.map((capability) => (
+                <li key={capability}>{capability}</li>
               ))}
-            </div>
-          </article>
-        </section>
+            </ul>
+          </section>
+        </article>
       </section>
     </main>
   );

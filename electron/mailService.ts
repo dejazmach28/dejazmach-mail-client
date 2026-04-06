@@ -108,7 +108,7 @@ export class MailService {
     this.database.exec("PRAGMA foreign_keys = ON;");
     this.createSchema();
     this.ensureReferenceData();
-    this.seedIfEmpty();
+    this.purgeLegacySeedDataIfPresent();
   }
 
   private createSchema() {
@@ -209,233 +209,31 @@ export class MailService {
     ].forEach((folder) => insertFolder.run(...folder));
   }
 
-  private seedIfEmpty() {
-    const row = this.database.prepare("SELECT COUNT(*) AS count FROM accounts").get() as { count: number };
-    if (row.count > 0) {
+  private purgeLegacySeedDataIfPresent() {
+    const legacyAccountIds = new Set(["acc-ops", "acc-leadership", "acc-audit"]);
+    const accounts = this.database
+      .prepare("SELECT id FROM accounts ORDER BY created_at ASC")
+      .all() as Array<{ id: string }>;
+
+    if (accounts.length === 0) {
       return;
     }
 
-    const createdAt = nowIso();
+    const onlyLegacySeedAccounts =
+      accounts.length === legacyAccountIds.size && accounts.every((account) => legacyAccountIds.has(account.id));
 
-    const insertAccount = this.database.prepare(`
-      INSERT INTO accounts (
-        id, name, address, provider, status, last_sync, unread_count, storage, username,
-        incoming_server, incoming_port, outgoing_server, outgoing_port, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertSecret = this.database.prepare(
-      "INSERT INTO account_secrets (account_id, encrypted_secret, created_at) VALUES (?, ?, ?)"
-    );
-
-    const initialAccounts = [
-      {
-        id: "acc-ops",
-        name: "Operations",
-        address: "ops@dejazmach.app",
-        provider: "Private IMAP",
-        status: "online",
-        lastSync: "10 seconds ago",
-        unreadCount: 2,
-        username: "ops@dejazmach.app",
-        incomingServer: "imap.dejazmach.app",
-        incomingPort: 993,
-        outgoingServer: "smtp.dejazmach.app",
-        outgoingPort: 465,
-        secret: "seed-ops-password"
-      },
-      {
-        id: "acc-leadership",
-        name: "Leadership",
-        address: "council@dejazmach.app",
-        provider: "Hosted Exchange",
-        status: "syncing",
-        lastSync: "Sync in progress",
-        unreadCount: 1,
-        username: "council@dejazmach.app",
-        incomingServer: "outlook.office365.com",
-        incomingPort: 993,
-        outgoingServer: "smtp.office365.com",
-        outgoingPort: 587,
-        secret: "seed-council-password"
-      },
-      {
-        id: "acc-audit",
-        name: "Audit",
-        address: "ledger@dejazmach.app",
-        provider: "Readonly archive",
-        status: "attention",
-        lastSync: "1 hour ago",
-        unreadCount: 1,
-        username: "ledger@dejazmach.app",
-        incomingServer: "archive.dejazmach.app",
-        incomingPort: 993,
-        outgoingServer: "smtp.dejazmach.app",
-        outgoingPort: 465,
-        secret: "seed-audit-password"
-      }
-    ];
-
-    for (const account of initialAccounts) {
-      const storage = this.input.cipher.isAvailable() ? "OS vault" : "Metadata only";
-      insertAccount.run(
-        account.id,
-        account.name,
-        account.address,
-        account.provider,
-        account.status,
-        account.lastSync,
-        account.unreadCount,
-        storage,
-        account.username,
-        account.incomingServer,
-        account.incomingPort,
-        account.outgoingServer,
-        account.outgoingPort,
-        createdAt
-      );
-
-      if (this.input.cipher.isAvailable()) {
-        insertSecret.run(
-          account.id,
-          this.input.cipher.encryptString(JSON.stringify({ password: account.secret })),
-          createdAt
-        );
-      }
+    if (!onlyLegacySeedAccounts) {
+      return;
     }
 
-    const insertThread = this.database.prepare(
-      "INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)"
-    );
-    const insertMessage = this.database.prepare(`
-      INSERT INTO messages (
-        id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-        unread, trust, sent_at, body, verified, content_mode, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.database.exec(`
+      DELETE FROM account_secrets;
+      DELETE FROM messages;
+      DELETE FROM threads;
+      DELETE FROM sync_jobs;
+      DELETE FROM ledger_entries;
+      DELETE FROM accounts;
     `);
-
-    const seededThreads = [
-      {
-        threadId: "thread-rotation",
-        accountId: "acc-ops",
-        folderId: "folder-priority",
-        subject: "Root key rotation completed",
-        classification: "Security-critical",
-        participants: ["Infrastructure", "ops@dejazmach.app", "security@dejazmach.app"],
-        sender: "Infrastructure",
-        address: "security@dejazmach.app",
-        label: "Security",
-        trust: "encrypted" as const,
-        unread: 1,
-        verified: 1,
-        contentMode: "plain" as const,
-        body: `Morning team,
-
-The key rotation finished cleanly across desktop profiles. DejAzmach kept remote content disabled during sync, attachment policy stayed locked, and no background trackers were contacted.
-
-Next implementation step:
-- wire real provider sync behind the local vault
-- keep credentials out of renderer state
-- preserve legible trust indicators in the desktop UI`,
-        sentAt: "Today, 08:10",
-        time: "08:10"
-      },
-      {
-        threadId: "thread-launch",
-        accountId: "acc-leadership",
-        folderId: "folder-priority",
-        subject: "Launch review approved for desktop shell",
-        classification: "Product",
-        participants: ["Design Council", "council@dejazmach.app"],
-        sender: "Design Council",
-        address: "council@dejazmach.app",
-        label: "Product",
-        trust: "trusted" as const,
-        unread: 0,
-        verified: 1,
-        contentMode: "plain" as const,
-        body: `The desktop direction is approved.
-
-What worked:
-- the interface feels like a native control room instead of a browser tab
-- account state, sync state, and audit events sit in the main workflow
-- the shell now persists data locally instead of inventing a fresh mock state every boot`,
-        sentAt: "Today, 07:42",
-        time: "07:42"
-      },
-      {
-        threadId: "thread-audit",
-        accountId: "acc-audit",
-        folderId: "folder-security",
-        subject: "Attachment sandbox report",
-        classification: "Audit",
-        participants: ["Ops Ledger", "ledger@dejazmach.app"],
-        sender: "Ops Ledger",
-        address: "ledger@dejazmach.app",
-        label: "Audit",
-        trust: "review" as const,
-        unread: 1,
-        verified: 1,
-        contentMode: "html-blocked" as const,
-        body: `HTML body blocked by policy.
-
-Plain-text extraction:
-- 2 files opened outside the app
-- 0 inline executions
-- 0 automatic previews from remote hosts
-- 1 reminder generated for stricter file-type labeling`,
-        sentAt: "Today, 06:30",
-        time: "06:30"
-      }
-    ];
-
-    for (const item of seededThreads) {
-      insertThread.run(
-        item.threadId,
-        item.subject,
-        item.classification,
-        JSON.stringify(item.participants),
-        createdAt
-      );
-
-      insertMessage.run(
-        makeId("message"),
-        item.threadId,
-        item.accountId,
-        item.folderId,
-        item.sender,
-        item.address,
-        item.subject,
-        textPreview(item.body),
-        item.label,
-        item.time,
-        item.unread,
-        item.trust,
-        item.sentAt,
-        item.body,
-        item.verified,
-        item.contentMode,
-        createdAt
-      );
-    }
-
-    const insertSyncJob = this.database.prepare(
-      "INSERT INTO sync_jobs (id, title, detail, status, time, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    );
-    [
-      ["sync-1", "Leadership mailbox delta sync", "Checking headers while local state remains the source of truth.", "running", "Now"],
-      ["sync-2", "Audit archive compaction", "Preparing encrypted local storage boundaries for immutable audit mail.", "queued", "Next"],
-      ["sync-3", "Local draft integrity check", "Verifying persisted drafts and account-vault records.", "complete", "07:54"]
-    ].forEach((job) => insertSyncJob.run(...job, createdAt));
-
-    const insertLedger = this.database.prepare(
-      "INSERT INTO ledger_entries (id, title, detail, occurred_at, severity, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    );
-    [
-      ["ledger-1", "Remote content stayed blocked", "No message view requested third-party images or scripts in this session.", "08:14", "info"],
-      ["ledger-2", "Account secrets moved to local vault", `Account credentials are stored through ${this.input.cipher.isAvailable() ? "safeStorage-backed encryption" : "metadata-only mode because vault encryption is unavailable"}.`, "08:17", this.input.cipher.isAvailable() ? "info" : "notice"],
-      ["ledger-3", "Unexpected downloads are blocked", "The shell prevents unmanaged downloads until an explicit attachment pipeline is implemented.", "08:22", "notice"]
-    ].forEach((entry) => insertLedger.run(...entry, createdAt));
   }
 
   getWorkspaceSnapshot(context: WorkspaceContext): WorkspaceSnapshot {

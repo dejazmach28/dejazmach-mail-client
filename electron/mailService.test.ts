@@ -13,7 +13,7 @@ const mockCipher = {
   decryptString: (value: Buffer) => value.toString("utf8").replace(/^enc:/, "")
 };
 
-test("mail service seeds a persistent workspace snapshot", () => {
+test("mail service starts with an empty account workspace and reference folders", () => {
   const userDataPath = createTempDir();
   const service = new MailService({ userDataPath, cipher: mockCipher });
 
@@ -24,7 +24,8 @@ test("mail service seeds a persistent workspace snapshot", () => {
     packaged: true
   });
 
-  assert.equal(snapshot.accounts.length >= 3, true);
+  assert.equal(snapshot.accounts.length, 0);
+  assert.equal(snapshot.messages.length, 0);
   assert.equal(snapshot.folders.some((folder) => folder.id === "folder-drafts"), true);
   assert.equal(snapshot.shellState.securityMetrics.some((metric) => metric.label === "Local persistence"), true);
 
