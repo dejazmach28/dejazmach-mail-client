@@ -1,7 +1,5 @@
-import electron from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi } from "../shared/contracts.js";
-
-const { contextBridge, ipcRenderer } = electron;
 
 const desktopApi = {
   getWorkspaceSnapshot: () => ipcRenderer.invoke("app:get-workspace-snapshot"),

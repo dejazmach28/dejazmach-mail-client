@@ -1,17 +1,11 @@
-import electron from "electron";
+import { app, BrowserWindow, Menu, ipcMain, session, shell } from "electron";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createLoadFailureUrl, createSplashScreenUrl } from "./loadScreens.js";
 import { MailService } from "./mailService.js";
 import { getEnvironment, isAllowedNavigation, isAllowedRendererRequest, isSafeExternalUrl } from "./shellPolicy.js";
 import { createCipher } from "./vault.js";
 import { createWindowStateStore } from "./windowState.js";
-
-const { app, BrowserWindow, Menu, ipcMain, session, shell } = electron;
 type BrowserWindowInstance = InstanceType<typeof BrowserWindow>;
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const appUrl = devServerUrl ?? `file://${path.join(__dirname, "../../dist/index.html")}`;
 const environment = getEnvironment(app.isPackaged, devServerUrl);
