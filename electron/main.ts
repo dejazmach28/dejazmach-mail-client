@@ -1,21 +1,23 @@
-import { app, BrowserWindow, Menu, ipcMain, session, shell } from "electron";
+import type * as Electron from "electron";
 import path from "node:path";
 import { createLoadFailureUrl, createSplashScreenUrl } from "./loadScreens.js";
 import { MailService } from "./mailService.js";
 import { getEnvironment, isAllowedNavigation, isAllowedRendererRequest, isSafeExternalUrl } from "./shellPolicy.js";
 import { createCipher } from "./vault.js";
 import { createWindowStateStore } from "./windowState.js";
+const { app, BrowserWindow, Menu, ipcMain, session } = require("electron/main") as typeof Electron;
+const { shell } = require("electron/common") as typeof Electron;
 type BrowserWindowInstance = InstanceType<typeof BrowserWindow>;
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const appUrl = devServerUrl ?? `file://${path.join(__dirname, "../../dist/index.html")}`;
-const environment = getEnvironment(app.isPackaged, devServerUrl);
-const windowStateStore = createWindowStateStore(app.getPath("userData"));
 
 let mainWindow: BrowserWindowInstance | null = null;
 let splashWindow: BrowserWindowInstance | null = null;
 let mailService: MailService | null = null;
+let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null;
 
 const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : "Unknown application error.");
+const getEnvironmentState = () => getEnvironment(app.isPackaged, devServerUrl);
 
 const requireMailService = () => {
   if (!mailService) {
@@ -25,15 +27,23 @@ const requireMailService = () => {
   return mailService;
 };
 
+const requireWindowStateStore = () => {
+  if (!windowStateStore) {
+    throw new Error("Window state store is not ready.");
+  }
+
+  return windowStateStore;
+};
+
 const getPolicyInput = () => ({
   appUrl,
-  environment
+  environment: getEnvironmentState()
 });
 
 const createWorkspaceContext = () => ({
   version: app.getVersion(),
   platform: process.platform,
-  environment,
+  environment: getEnvironmentState(),
   packaged: app.isPackaged
 });
 
@@ -53,6 +63,7 @@ const configureSessionPolicy = () => {
 };
 
 const buildApplicationMenu = () => {
+  const isPackaged = app.isPackaged;
   const template: Electron.MenuItemConstructorOptions[] = [];
 
   if (process.platform === "darwin") {
@@ -84,7 +95,7 @@ const buildApplicationMenu = () => {
         { role: "zoomOut" },
         { type: "separator" },
         { role: "togglefullscreen" },
-        ...(app.isPackaged ? [] : [{ type: "separator" as const }, { role: "reload" as const }, { role: "forceReload" as const }, { role: "toggleDevTools" as const }])
+        ...(isPackaged ? [] : [{ type: "separator" as const }, { role: "reload" as const }, { role: "forceReload" as const }, { role: "toggleDevTools" as const }])
       ]
     },
     {
@@ -140,7 +151,8 @@ const closeSplashWindow = () => {
 };
 
 const createMainWindow = () => {
-  const bounds = windowStateStore.load();
+  const isPackaged = app.isPackaged;
+  const bounds = requireWindowStateStore().load();
 
   mainWindow = new BrowserWindow({
     show: false,
@@ -161,7 +173,7 @@ const createMainWindow = () => {
       nodeIntegration: false,
       webviewTag: false,
       webSecurity: true,
-      devTools: !app.isPackaged
+      devTools: !isPackaged
     }
   });
 
@@ -220,7 +232,7 @@ const createMainWindow = () => {
 
   mainWindow.on("close", () => {
     if (mainWindow && !mainWindow.isMinimized() && !mainWindow.isMaximized()) {
-      windowStateStore.save(mainWindow);
+      requireWindowStateStore().save(mainWindow);
     }
   });
 
@@ -273,6 +285,7 @@ if (process.platform === "linux") {
 }
 
 app.whenReady().then(async () => {
+  windowStateStore = createWindowStateStore(app.getPath("userData"));
   buildApplicationMenu();
   configureSessionPolicy();
   mailService = new MailService({

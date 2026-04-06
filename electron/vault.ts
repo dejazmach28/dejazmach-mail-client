@@ -1,4 +1,5 @@
-import { safeStorage } from "electron";
+import type * as Electron from "electron";
+const { safeStorage } = require("electron/main") as typeof Electron;
 
 export type Cipher = {
   isAvailable: () => boolean;
