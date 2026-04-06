@@ -59,6 +59,8 @@ export type SendMessageInput = {
   to: string;
   subject: string;
   body: string;
+  inReplyTo?: string;
+  references?: string[];
 };
 
 export type FetchMessageBodyInput = {
@@ -348,21 +350,28 @@ export const buildPlainTextMessage = ({
   fromName,
   to,
   subject,
-  body
+  body,
+  inReplyTo,
+  references
 }: {
   fromAddress: string;
   fromName: string;
   to: string;
   subject: string;
   body: string;
+  inReplyTo?: string;
+  references?: string[];
 }) => {
   const fromHeader = fromName.trim() ? `${fromName.trim()} <${fromAddress}>` : fromAddress;
+  const normalizedReferences = Array.from(new Set((references ?? []).filter(Boolean)));
 
   return [
     `From: ${fromHeader}`,
     `To: ${to}`,
     `Subject: ${subject || "No subject"}`,
     `Date: ${new Date().toUTCString()}`,
+    ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
+    ...(normalizedReferences.length > 0 ? [`References: ${normalizedReferences.join(" ")}`] : []),
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="utf-8"',
     "Content-Transfer-Encoding: 8bit",

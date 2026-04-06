@@ -139,6 +139,7 @@ export type CreateDraftInput = {
   to: string;
   subject: string;
   body: string;
+  replyToMessageId?: string;
 };
 
 export type FetchMessageBodyInput = {
