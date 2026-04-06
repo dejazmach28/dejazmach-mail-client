@@ -244,6 +244,13 @@ if (!gotSingleInstanceLock) {
   app.quit();
 }
 
+if (process.platform === "linux") {
+  // Older Linux GPU stacks, especially Intel Ivy Bridge, commonly hang or paint a black window in Electron.
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+}
+
 app.whenReady().then(async () => {
   buildApplicationMenu();
   configureSessionPolicy();

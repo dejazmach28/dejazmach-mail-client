@@ -61,6 +61,9 @@
       ],
       "category": "Network"
     },
+    "deb": {
+      "afterInstall": "build/linux/postinst.sh"
+    },
     "win": {
       "target": [
         {
