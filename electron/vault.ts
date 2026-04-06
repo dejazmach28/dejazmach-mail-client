@@ -1,4 +1,6 @@
-import { safeStorage } from "electron";
+import electron from "electron";
+
+const { safeStorage } = electron;
 
 export type Cipher = {
   isAvailable: () => boolean;

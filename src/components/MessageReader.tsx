@@ -4,6 +4,7 @@ type MessageReaderProps = {
   thread?: ThreadDetail;
   readerMessage?: MailSummary;
   loadingMessageBodyId: string | null;
+  onDelete: () => void;
   onReply: () => void;
   onForward: () => void;
 };
@@ -26,6 +27,7 @@ export function MessageReader({
   thread,
   readerMessage,
   loadingMessageBodyId,
+  onDelete,
   onReply,
   onForward
 }: MessageReaderProps) {
@@ -93,6 +95,9 @@ export function MessageReader({
       </div>
 
       <footer className="compose-actions">
+        <button className="secondary-button" onClick={onDelete} type="button">
+          Delete
+        </button>
         <button className="secondary-button" onClick={onReply} type="button">
           Reply
         </button>

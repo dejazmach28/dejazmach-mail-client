@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, session, shell } from "electron";
+import electron from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLoadFailureUrl, createSplashScreenUrl } from "./loadScreens.js";
@@ -7,6 +7,9 @@ import { getEnvironment, isAllowedNavigation, isAllowedRendererRequest, isSafeEx
 import { createCipher } from "./vault.js";
 import { createWindowStateStore } from "./windowState.js";
 
+const { app, BrowserWindow, Menu, ipcMain, session, shell } = electron;
+type BrowserWindowInstance = InstanceType<typeof BrowserWindow>;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -14,8 +17,8 @@ const appUrl = devServerUrl ?? `file://${path.join(__dirname, "../../dist/index.
 const environment = getEnvironment(app.isPackaged, devServerUrl);
 const windowStateStore = createWindowStateStore(app.getPath("userData"));
 
-let mainWindow: BrowserWindow | null = null;
-let splashWindow: BrowserWindow | null = null;
+let mainWindow: BrowserWindowInstance | null = null;
+let splashWindow: BrowserWindowInstance | null = null;
 let mailService: MailService | null = null;
 
 const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : "Unknown application error.");
@@ -173,7 +176,7 @@ const createMainWindow = () => {
     mainWindow?.show();
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }: { url: string }) => {
     if (isSafeExternalUrl(url)) {
       void shell.openExternal(url);
     }
@@ -181,7 +184,7 @@ const createMainWindow = () => {
     return { action: "deny" };
   });
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
+  mainWindow.webContents.on("will-navigate", (event: { preventDefault: () => void }, url: string) => {
     if (isAllowedNavigation(url, getPolicyInput())) {
       return;
     }
@@ -189,7 +192,7 @@ const createMainWindow = () => {
     event.preventDefault();
   });
 
-  mainWindow.webContents.on("render-process-gone", async (_event, details) => {
+  mainWindow.webContents.on("render-process-gone", async (_event: unknown, details: { reason: string }) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
@@ -200,7 +203,15 @@ const createMainWindow = () => {
     mainWindow.show();
   });
 
-  mainWindow.webContents.on("did-fail-load", async (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+  mainWindow.webContents.on(
+    "did-fail-load",
+    async (
+      _event: unknown,
+      errorCode: number,
+      errorDescription: string,
+      validatedUrl: string,
+      isMainFrame: boolean
+    ) => {
     if (!isMainFrame || !mainWindow || mainWindow.isDestroyed()) {
       return;
     }
@@ -210,7 +221,8 @@ const createMainWindow = () => {
     );
     mainWindow.show();
     closeSplashWindow();
-  });
+    }
+  );
 
   mainWindow.on("close", () => {
     if (mainWindow && !mainWindow.isMinimized() && !mainWindow.isMaximized()) {
@@ -232,7 +244,7 @@ const createMainWindow = () => {
   return mainWindow;
 };
 
-const loadApplicationUi = async (window: BrowserWindow) => {
+const loadApplicationUi = async (window: BrowserWindowInstance) => {
   try {
     if (devServerUrl) {
       await window.loadURL(devServerUrl);

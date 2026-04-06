@@ -342,18 +342,30 @@ function App() {
     setActiveSurface("message");
     setActionError(null);
 
+    const selectedMessage = workspace.messages.find((message) => message.id === messageId);
     const thread = workspace.threads.find((candidate) => candidate.id === threadId);
     const needsRemoteFetch = thread?.messages.some(
       (message) => message.id === messageId && message.contentMode === "remote-pending"
     );
 
-    if (!needsRemoteFetch || !window.desktopApi) {
+    if (!window.desktopApi) {
       return;
     }
 
-    setLoadingMessageBodyId(messageId);
-
     try {
+      if (selectedMessage?.unread) {
+        const readResult = await window.desktopApi.markRead({ accountId, messageId });
+        if (readResult.data) {
+          applyWorkspace(readResult.data);
+        }
+        unwrapResult(readResult);
+      }
+
+      if (!needsRemoteFetch) {
+        return;
+      }
+
+      setLoadingMessageBodyId(messageId);
       const result = await window.desktopApi.fetchMessageBody({ accountId, messageId });
       if (result.data) {
         const fetchedMessage = result.data;
@@ -364,6 +376,27 @@ function App() {
       setActionError(error instanceof Error ? error.message : "Message body fetch failed.");
     } finally {
       setLoadingMessageBodyId(null);
+    }
+  };
+
+  const handleDeleteMessage = async (accountId: string, messageId: string) => {
+    if (!window.desktopApi) {
+      setActionError("Deleting a message requires the Electron desktop shell.");
+      return;
+    }
+
+    setActionError(null);
+    setActionNotice(null);
+
+    try {
+      const result = await window.desktopApi.deleteMessage({ accountId, messageId });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+      setActionNotice("Message deleted.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message delete failed.");
     }
   };
 
@@ -631,6 +664,11 @@ function App() {
               ) : (
                 <MessageReader
                   loadingMessageBodyId={loadingMessageBodyId}
+                  onDelete={() => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleDeleteMessage(selectedAccount.id, readerMessage.id);
+                    }
+                  }}
                   onForward={() =>
                     openComposer(selectedAccount?.id, {
                       to: "",
