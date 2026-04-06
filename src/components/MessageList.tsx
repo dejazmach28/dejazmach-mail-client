@@ -1,6 +1,9 @@
+import { useState } from "react";
 import type { AccountStatus, MailSummary } from "../../shared/contracts.js";
+import type { WorkspaceSnapshot } from "../../shared/contracts.js";
 
 type MessageListProps = {
+  accountId?: string;
   folderName: string;
   accountStatus?: AccountStatus;
   unreadCount?: number;
@@ -9,6 +12,8 @@ type MessageListProps = {
   selectedThreadId: string;
   selectedFolderName?: string;
   onOpenMessage: (messageId: string, threadId: string, accountId: string) => void;
+  onSyncComplete: (workspace: WorkspaceSnapshot) => void;
+  onSyncError: (message: string) => void;
   onSearchQueryChange: (value: string) => void;
 };
 
@@ -70,6 +75,7 @@ function MessageRow({ isSelected, message, onOpen }: MessageRowProps) {
 }
 
 export function MessageList({
+  accountId,
   folderName,
   accountStatus,
   unreadCount,
@@ -78,8 +84,39 @@ export function MessageList({
   selectedThreadId,
   selectedFolderName,
   onOpenMessage,
+  onSyncComplete,
+  onSyncError,
   onSearchQueryChange
 }: MessageListProps) {
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleSync = async () => {
+    if (!window.desktopApi) {
+      onSyncError("Folder sync requires the Electron desktop shell.");
+      return;
+    }
+
+    if (!accountId || !folderName) {
+      return;
+    }
+
+    setIsSyncing(true);
+
+    try {
+      const result = await window.desktopApi.syncFolder({ accountId, folderName });
+      if (result.data) {
+        onSyncComplete(result.data);
+      }
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      onSyncError(error instanceof Error ? error.message : "Folder sync failed.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   return (
     <section className="message-pane">
       <header className="pane-header">
@@ -87,9 +124,24 @@ export function MessageList({
           <span className="eyebrow">Mailbox</span>
           <h2>{folderName}</h2>
         </div>
-        <span className={accountStatus ? accountClassMap[accountStatus] : "status-pill status-pill-idle"}>
-          {accountStatus ?? "idle"}
-        </span>
+        <div className="pane-actions">
+          <button
+            aria-label={`Refresh ${folderName}`}
+            className="icon-button"
+            disabled={isSyncing || !accountId || !folderName}
+            onClick={() => {
+              void handleSync();
+            }}
+            type="button"
+          >
+            <span className={isSyncing ? "refresh-icon refresh-icon-spinning" : "refresh-icon"} aria-hidden="true">
+              ↻
+            </span>
+          </button>
+          <span className={accountStatus ? accountClassMap[accountStatus] : "status-pill status-pill-idle"}>
+            {accountStatus ?? "idle"}
+          </span>
+        </div>
       </header>
 
       <label className="search-shell">

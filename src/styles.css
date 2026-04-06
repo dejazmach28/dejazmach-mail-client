@@ -353,10 +353,42 @@ dt {
   padding: 24px 20px 0;
 }
 
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .pane-header h2 {
   margin-top: 6px;
   font-size: 1.35rem;
   font-weight: 700;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--text-muted);
+}
+
+.icon-button:hover {
+  background: var(--gray-200);
+}
+
+.refresh-icon {
+  display: inline-flex;
+  line-height: 1;
+  font-size: 1rem;
+}
+
+.refresh-icon-spinning {
+  animation: refresh-spin 1s linear infinite;
 }
 
 .search-shell {
@@ -1008,6 +1040,16 @@ button:disabled {
   .settings-grid,
   .activity-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@keyframes refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
   }
 }
 

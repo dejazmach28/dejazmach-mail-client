@@ -248,6 +248,36 @@ function App() {
   const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
   const recentSyncJobs = workspace.syncJobs.slice(0, 3);
 
+  useEffect(() => {
+    const desktopApi = window.desktopApi;
+    if (!desktopApi || !selectedAccountId || !selectedFolder?.name) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void desktopApi
+        .syncFolder({
+          accountId: selectedAccountId,
+          folderName: selectedFolder.name
+        })
+        .then((result) => {
+          if (result.data) {
+            applyWorkspace(result.data);
+          }
+          if (!result.ok) {
+            throw new Error(result.error);
+          }
+        })
+        .catch((error) => {
+          setActionError(error instanceof Error ? error.message : "Automatic folder sync failed.");
+        });
+    }, 300000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedAccountId, selectedFolder?.name]);
+
   const updateAccountForm = <K extends keyof CreateAccountInput>(field: K, value: CreateAccountInput[K]) => {
     setAccountForm((current) => ({
       ...current,
@@ -559,11 +589,14 @@ function App() {
             />
 
             <MessageList
+              accountId={selectedAccount?.id}
               accountStatus={selectedAccount?.status}
               folderName={selectedFolder?.name ?? "Folders"}
               messages={visibleMessages}
               onOpenMessage={openMessage}
               onSearchQueryChange={setSearchQuery}
+              onSyncComplete={applyWorkspace}
+              onSyncError={(message) => setActionError(message)}
               searchQuery={searchQuery}
               selectedFolderName={selectedFolder?.name}
               selectedThreadId={selectedThread?.id ?? ""}
