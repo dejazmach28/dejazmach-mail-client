@@ -58,9 +58,13 @@ test("buildPlainTextMessage creates a transport-safe text payload", () => {
     fromName: "Ops",
     to: "to@example.com",
     subject: "Check",
-    body: ".leading line"
+    body: ".leading line",
+    inReplyTo: "<original@example.com>",
+    references: ["<root@example.com>", "<original@example.com>"]
   });
 
   assert.match(message, /From: Ops <ops@example.com>/);
+  assert.match(message, /In-Reply-To: <original@example.com>/);
+  assert.match(message, /References: <root@example.com> <original@example.com>/);
   assert.match(message, /\r\n\.\.leading line$/);
 });
