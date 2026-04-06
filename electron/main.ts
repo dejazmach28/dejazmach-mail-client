@@ -1,48 +1,39 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, session, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createWorkspaceSnapshot } from "./workspace.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 
-type SecurityStatus = "active" | "monitoring" | "idle";
-
-type ShieldMetric = {
-  label: string;
-  value: string;
-  status: SecurityStatus;
-  detail: string;
+const isSafeExternalUrl = (value: string) => {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 };
 
-const securityMetrics: ShieldMetric[] = [
-  {
-    label: "Remote content",
-    value: "Blocked by default",
-    status: "active",
-    detail: "Pixels, mixed content, and unaudited embeds stay disabled until the user explicitly allows them."
-  },
-  {
-    label: "Vault encryption",
-    value: "AES-256 + OS keychain",
-    status: "active",
-    detail: "Account secrets are intended to live in the operating system credential vault instead of renderer storage."
-  },
-  {
-    label: "Attachment execution",
-    value: "Quarantined",
-    status: "active",
-    detail: "Unknown files are treated as untrusted and must be opened outside the app under explicit user action."
-  },
-  {
-    label: "Telemetry",
-    value: "Zero by default",
-    status: "monitoring",
-    detail: "No silent analytics pipeline is wired in. Every future diagnostic event should appear in the transparency ledger."
+const isAllowedNavigation = (value: string) => {
+  if (devServerUrl && value.startsWith(devServerUrl)) {
+    return true;
   }
-];
+
+  return value.startsWith("file://");
+};
+
+const configureSessionPolicy = () => {
+  const defaultSession = session.defaultSession;
+
+  defaultSession.setPermissionCheckHandler(() => false);
+  defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  defaultSession.setDevicePermissionHandler(() => false);
+};
 
 const createWindow = async () => {
   const window = new BrowserWindow({
+    show: false,
     width: 1520,
     height: 980,
     minWidth: 1180,
@@ -55,24 +46,31 @@ const createWindow = async () => {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      webviewTag: false,
       webSecurity: true,
       devTools: true
     }
   });
 
+  window.once("ready-to-show", () => {
+    window.show();
+  });
+
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) {
+    if (isSafeExternalUrl(url)) {
       void shell.openExternal(url);
     }
 
     return { action: "deny" };
   });
 
-  window.webContents.on("will-navigate", (event) => {
+  window.webContents.on("will-navigate", (event, url) => {
+    if (isAllowedNavigation(url)) {
+      return;
+    }
+
     event.preventDefault();
   });
-
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 
   if (devServerUrl) {
     await window.loadURL(devServerUrl);
@@ -82,18 +80,20 @@ const createWindow = async () => {
 };
 
 app.whenReady().then(() => {
-  ipcMain.handle("app:get-shell-state", () => ({
-    appName: "DejAzmach",
-    version: app.getVersion(),
-    platform: process.platform,
-    secureDesktopMode: true,
-    securityMetrics,
-    transparencyLedger: [
-      "No remote images were fetched in this session.",
-      "Renderer is isolated from Node.js APIs by preload-only access.",
-      "External links are denied in-app and pushed to the default browser only on https URLs."
-    ]
-  }));
+  configureSessionPolicy();
+
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("will-attach-webview", (event) => {
+      event.preventDefault();
+    });
+  });
+
+  ipcMain.handle("app:get-workspace-snapshot", () =>
+    createWorkspaceSnapshot({
+      version: app.getVersion(),
+      platform: process.platform
+    })
+  );
 
   void createWindow();
 

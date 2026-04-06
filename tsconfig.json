@@ -18,6 +18,5 @@
     "baseUrl": ".",
     "types": ["vite/client"]
   },
-  "include": ["src", "shared"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["src", "shared"]
 }

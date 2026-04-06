@@ -1,22 +1,9 @@
 /// <reference types="vite/client" />
+import type { DesktopApi } from "../shared/contracts.js";
 
 declare global {
   interface Window {
-    desktopApi: {
-      getShellState: () => Promise<{
-        appName: string;
-        version: string;
-        platform: string;
-        secureDesktopMode: boolean;
-        securityMetrics: Array<{
-          label: string;
-          value: string;
-          status: "active" | "monitoring" | "idle";
-          detail: string;
-        }>;
-        transparencyLedger: string[];
-      }>;
-    };
+    desktopApi?: DesktopApi;
   }
 }
 
