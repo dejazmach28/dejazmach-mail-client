@@ -12,6 +12,10 @@ export type RuntimeEnvironment = "development" | "production";
 
 export type MessageContentMode = "plain" | "html-blocked";
 
+export type TransportSecurity = "ssl_tls" | "starttls" | "plain";
+
+export type SmtpAuthMethod = "auto" | "plain" | "login" | "none";
+
 export type ReleaseTarget = {
   os: "linux" | "windows" | "macos";
   formats: string[];
@@ -60,9 +64,10 @@ export type AccountSummary = {
 
 export type FolderSummary = {
   id: string;
+  accountId?: string | null;
   name: string;
   count: number;
-  kind: "inbox" | "priority" | "drafts" | "sent" | "archive" | "security";
+  kind: "inbox" | "priority" | "drafts" | "sent" | "archive" | "security" | "custom";
 };
 
 export type MailSummary = {
@@ -122,8 +127,11 @@ export type CreateAccountInput = {
   password: string;
   incomingServer: string;
   incomingPort: number;
+  incomingSecurity: TransportSecurity;
   outgoingServer: string;
   outgoingPort: number;
+  outgoingSecurity: TransportSecurity;
+  outgoingAuthMethod: SmtpAuthMethod;
 };
 
 export type CreateDraftInput = {
@@ -133,10 +141,21 @@ export type CreateDraftInput = {
   body: string;
 };
 
+export type ActionResult<T> =
+  | {
+      ok: true;
+      data: T;
+    }
+  | {
+      ok: false;
+      error: string;
+      data?: T;
+    };
+
 export type DesktopApi = {
   getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
-  createAccount: (input: CreateAccountInput) => Promise<WorkspaceSnapshot>;
-  createDraft: (input: CreateDraftInput) => Promise<WorkspaceSnapshot>;
-  verifyAccount: (accountId: string) => Promise<WorkspaceSnapshot>;
-  sendMessage: (input: CreateDraftInput) => Promise<WorkspaceSnapshot>;
+  createAccount: (input: CreateAccountInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  createDraft: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  verifyAccount: (accountId: string) => Promise<ActionResult<WorkspaceSnapshot>>;
+  sendMessage: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
 };

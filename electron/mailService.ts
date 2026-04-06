@@ -6,9 +6,11 @@ import type {
   CreateDraftInput,
   MessageContentMode,
   RuntimeEnvironment,
+  SmtpAuthMethod,
+  TransportSecurity,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
-import { sendPlainTextMessage, verifyAccountConnection } from "./providerClient.js";
+import { describeTransportError, sendPlainTextMessage, verifyAccountConnection } from "./providerClient.js";
 
 type Cipher = {
   isAvailable: () => boolean;
@@ -66,6 +68,25 @@ const textPreview = (value: string) =>
     .trim()
     .slice(0, 140);
 
+const folderSortOrder = (kind: string, name: string) => {
+  switch (kind) {
+    case "inbox":
+      return 10;
+    case "priority":
+      return 20;
+    case "drafts":
+      return 30;
+    case "sent":
+      return 40;
+    case "archive":
+      return 50;
+    case "security":
+      return 60;
+    default:
+      return 100 + name.toLowerCase().charCodeAt(0);
+  }
+};
+
 const createCapabilities = () => [
   "Single-instance desktop shell",
   "Splash and load-failure handling",
@@ -109,6 +130,7 @@ export class MailService {
     this.createSchema();
     this.ensureReferenceData();
     this.purgeLegacySeedDataIfPresent();
+    this.purgeLegacyGlobalFoldersIfUnused();
   }
 
   private createSchema() {
@@ -125,8 +147,11 @@ export class MailService {
         username TEXT NOT NULL,
         incoming_server TEXT NOT NULL,
         incoming_port INTEGER NOT NULL,
+        incoming_security TEXT NOT NULL DEFAULT 'ssl_tls',
         outgoing_server TEXT NOT NULL,
         outgoing_port INTEGER NOT NULL,
+        outgoing_security TEXT NOT NULL DEFAULT 'ssl_tls',
+        outgoing_auth_method TEXT NOT NULL DEFAULT 'auto',
         created_at TEXT NOT NULL
       );
 
@@ -139,8 +164,10 @@ export class MailService {
 
       CREATE TABLE IF NOT EXISTS folders (
         id TEXT PRIMARY KEY,
+        account_id TEXT,
         name TEXT NOT NULL,
         kind TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'remote',
         sort_order INTEGER NOT NULL
       );
 
@@ -192,22 +219,43 @@ export class MailService {
         created_at TEXT NOT NULL
       );
     `);
+    this.ensureAccountTransportColumns();
+    this.ensureFolderColumns();
   }
 
-  private ensureReferenceData() {
-    const insertFolder = this.database.prepare(
-      "INSERT OR IGNORE INTO folders (id, name, kind, sort_order) VALUES (?, ?, ?, ?)"
+  private ensureAccountTransportColumns() {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>).map((column) => column.name)
     );
 
-    [
-      ["folder-priority", "Priority inbox", "priority", 1],
-      ["folder-inbox", "Inbox", "inbox", 2],
-      ["folder-security", "Security review", "security", 3],
-      ["folder-drafts", "Shielded drafts", "drafts", 4],
-      ["folder-sent", "Sent", "sent", 5],
-      ["folder-archive", "Archive", "archive", 6]
-    ].forEach((folder) => insertFolder.run(...folder));
+    if (!columns.has("incoming_security")) {
+      this.database.exec("ALTER TABLE accounts ADD COLUMN incoming_security TEXT NOT NULL DEFAULT 'ssl_tls';");
+    }
+
+    if (!columns.has("outgoing_security")) {
+      this.database.exec("ALTER TABLE accounts ADD COLUMN outgoing_security TEXT NOT NULL DEFAULT 'ssl_tls';");
+    }
+
+    if (!columns.has("outgoing_auth_method")) {
+      this.database.exec("ALTER TABLE accounts ADD COLUMN outgoing_auth_method TEXT NOT NULL DEFAULT 'auto';");
+    }
   }
+
+  private ensureFolderColumns() {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(folders)").all() as Array<{ name: string }>).map((column) => column.name)
+    );
+
+    if (!columns.has("account_id")) {
+      this.database.exec("ALTER TABLE folders ADD COLUMN account_id TEXT;");
+    }
+
+    if (!columns.has("source")) {
+      this.database.exec("ALTER TABLE folders ADD COLUMN source TEXT NOT NULL DEFAULT 'remote';");
+    }
+  }
+
+  private ensureReferenceData() {}
 
   private purgeLegacySeedDataIfPresent() {
     const legacyAccountIds = new Set(["acc-ops", "acc-leadership", "acc-audit"]);
@@ -232,8 +280,21 @@ export class MailService {
       DELETE FROM threads;
       DELETE FROM sync_jobs;
       DELETE FROM ledger_entries;
+      DELETE FROM folders;
       DELETE FROM accounts;
     `);
+  }
+
+  private purgeLegacyGlobalFoldersIfUnused() {
+    const legacyFolderIds = ["folder-priority", "folder-inbox", "folder-security", "folder-drafts", "folder-sent", "folder-archive"];
+    const accountsCount = this.database.prepare("SELECT COUNT(*) AS count FROM accounts").get() as { count: number };
+    const messagesCount = this.database.prepare("SELECT COUNT(*) AS count FROM messages").get() as { count: number };
+
+    if (accountsCount.count === 0 && messagesCount.count === 0) {
+      this.database
+        .prepare(`DELETE FROM folders WHERE id IN (${legacyFolderIds.map(() => "?").join(", ")})`)
+        .run(...legacyFolderIds);
+    }
   }
 
   getWorkspaceSnapshot(context: WorkspaceContext): WorkspaceSnapshot {
@@ -257,13 +318,16 @@ export class MailService {
       .prepare(`
         SELECT
           folders.id,
+          folders.account_id AS accountId,
           folders.name,
           COUNT(messages.id) AS count,
           folders.kind
         FROM folders
-        LEFT JOIN messages ON messages.folder_id = folders.id
-        GROUP BY folders.id, folders.name, folders.kind, folders.sort_order
-        ORDER BY folders.sort_order ASC
+        LEFT JOIN messages
+          ON messages.folder_id = folders.id
+         AND messages.account_id = folders.account_id
+        GROUP BY folders.id, folders.account_id, folders.name, folders.kind, folders.sort_order
+        ORDER BY folders.sort_order ASC, LOWER(folders.name) ASC
       `)
       .all() as WorkspaceSnapshot["folders"];
 
@@ -410,8 +474,11 @@ export class MailService {
           accounts.username,
           accounts.incoming_server AS incomingServer,
           accounts.incoming_port AS incomingPort,
+          accounts.incoming_security AS incomingSecurity,
           accounts.outgoing_server AS outgoingServer,
           accounts.outgoing_port AS outgoingPort,
+          accounts.outgoing_security AS outgoingSecurity,
+          accounts.outgoing_auth_method AS outgoingAuthMethod,
           account_secrets.encrypted_secret AS encryptedSecret
         FROM accounts
         LEFT JOIN account_secrets ON account_secrets.account_id = accounts.id
@@ -426,8 +493,11 @@ export class MailService {
           username: string;
           incomingServer: string;
           incomingPort: number;
+          incomingSecurity: TransportSecurity;
           outgoingServer: string;
           outgoingPort: number;
+          outgoingSecurity: TransportSecurity;
+          outgoingAuthMethod: SmtpAuthMethod;
           encryptedSecret?: Buffer;
         }
       | undefined;
@@ -471,6 +541,39 @@ export class MailService {
       .run(makeId("sync"), title, detail, status, status === "complete" ? displayTime() : "Now", nowIso());
   }
 
+  private ensureFolder(accountId: string, name: string, kind: WorkspaceSnapshot["folders"][number]["kind"], source: "remote" | "local") {
+    const existing = this.database
+      .prepare(
+        "SELECT id FROM folders WHERE account_id = ? AND name = ? AND kind = ? AND source = ? LIMIT 1"
+      )
+      .get(accountId, name, kind, source) as { id: string } | undefined;
+
+    if (existing) {
+      return existing.id;
+    }
+
+    const folderId = makeId("folder");
+    this.database
+      .prepare("INSERT INTO folders (id, account_id, name, kind, source, sort_order) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(folderId, accountId, name, kind, source, folderSortOrder(kind, name));
+    return folderId;
+  }
+
+  private replaceRemoteFolders(
+    accountId: string,
+    folders: Array<{ name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>
+  ) {
+    this.database.prepare("DELETE FROM folders WHERE account_id = ? AND source = 'remote'").run(accountId);
+
+    const insertFolder = this.database.prepare(
+      "INSERT INTO folders (id, account_id, name, kind, source, sort_order) VALUES (?, ?, ?, ?, 'remote', ?)"
+    );
+
+    for (const folder of folders) {
+      insertFolder.run(makeId("folder"), accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
+    }
+  }
+
   createAccount(input: CreateAccountInput, context: WorkspaceContext): WorkspaceSnapshot {
     const accountId = makeId("account");
     const createdAt = nowIso();
@@ -480,8 +583,9 @@ export class MailService {
       .prepare(`
         INSERT INTO accounts (
           id, name, address, provider, status, last_sync, unread_count, storage, username,
-          incoming_server, incoming_port, outgoing_server, outgoing_port, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          incoming_server, incoming_port, incoming_security, outgoing_server, outgoing_port, outgoing_security,
+          outgoing_auth_method, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         accountId,
@@ -495,8 +599,11 @@ export class MailService {
         input.username,
         input.incomingServer,
         input.incomingPort,
+        input.incomingSecurity,
         input.outgoingServer,
         input.outgoingPort,
+        input.outgoingSecurity,
+        input.outgoingAuthMethod,
         createdAt
       );
 
@@ -509,46 +616,6 @@ export class MailService {
           createdAt
         );
     }
-
-    const threadId = makeId("thread");
-    const welcomeBody = `Account ${input.address} was added locally.
-
-Provider: ${input.provider}
-Incoming: ${input.incomingServer}:${input.incomingPort}
-Outgoing: ${input.outgoingServer}:${input.outgoingPort}
-
-Credentials are ${this.input.cipher.isAvailable() ? "encrypted and persisted in the local vault." : "not yet protected by the OS vault in this environment."}`;
-
-    this.database
-      .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(threadId, `Account onboarded for ${input.address}`, "Account", JSON.stringify([input.address]), createdAt);
-
-    this.database
-      .prepare(`
-        INSERT INTO messages (
-          id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, verified, content_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        makeId("message"),
-        threadId,
-        accountId,
-        "folder-inbox",
-        "DejAzmach Setup",
-        input.address,
-        `Account onboarded for ${input.address}`,
-        textPreview(welcomeBody),
-        "Setup",
-        displayTime(),
-        1,
-        "trusted",
-        `Today, ${displayTime()}`,
-        welcomeBody,
-        1,
-        "plain",
-        createdAt
-      );
 
     this.database
       .prepare("INSERT INTO ledger_entries (id, title, detail, occurred_at, severity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -577,6 +644,8 @@ Credentials are ${this.input.cipher.isAvailable() ? "encrypted and persisted in 
       throw new Error("Cannot create a draft for an unknown account.");
     }
 
+    const draftsFolderId = this.ensureFolder(input.accountId, "Drafts", "drafts", "local");
+
     this.database
       .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(threadId, subject, "Draft", JSON.stringify([account.address, input.to]), createdAt);
@@ -592,7 +661,7 @@ Credentials are ${this.input.cipher.isAvailable() ? "encrypted and persisted in 
         makeId("message"),
         threadId,
         input.accountId,
-        "folder-drafts",
+        draftsFolderId,
         account.name,
         account.address,
         subject,
@@ -642,69 +711,37 @@ Credentials are ${this.input.cipher.isAvailable() ? "encrypted and persisted in 
         address: account.address,
         incomingServer: account.incomingServer,
         incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
         outgoingServer: account.outgoingServer,
-        outgoingPort: account.outgoingPort
+        outgoingPort: account.outgoingPort,
+        outgoingSecurity: account.outgoingSecurity,
+        outgoingAuthMethod: account.outgoingAuthMethod
       });
+
+      this.replaceRemoteFolders(
+        accountId,
+        summary.imap.folders.map((folder) => ({ name: folder.name, kind: folder.kind }))
+      );
 
       this.database
         .prepare("UPDATE accounts SET status = ?, last_sync = ?, unread_count = ? WHERE id = ?")
         .run("online", `Verified ${displayTime()}`, Number(summary.imap.unseen ?? 0), accountId);
 
-      const verificationBody = `Provider verification completed for ${account.address}.
-
-IMAP:
-- Greeting: ${summary.imap.greeting}
-- Messages: ${summary.imap.messages ?? "unknown"}
-- Unseen: ${summary.imap.unseen ?? "unknown"}
-
-SMTP:
-- Transport secured: ${summary.smtp.secured ? "yes" : "no"}
-- Auth method: ${summary.smtp.authMethod}`;
-
-      const threadId = makeId("thread");
-      const createdAt = nowIso();
-
-      this.database
-        .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(threadId, `Connectivity verified for ${account.address}`, "Connectivity", JSON.stringify([account.address]), createdAt);
-
-      this.database
-        .prepare(`
-          INSERT INTO messages (
-            id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-            unread, trust, sent_at, body, verified, content_mode, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          makeId("message"),
-          threadId,
-          accountId,
-          "folder-security",
-          "DejAzmach Verification",
-          account.address,
-          `Connectivity verified for ${account.address}`,
-          textPreview(verificationBody),
-          "Connectivity",
-          displayTime(),
-          1,
-          "trusted",
-          `Today, ${displayTime()}`,
-          verificationBody,
-          1,
-          "plain",
-          createdAt
-        );
-
       this.addLedgerEntry(
         "Provider verification succeeded",
-        `${account.address} passed IMAP and SMTP verification. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.`,
+        `${account.address} passed IMAP and SMTP verification. ${summary.imap.folders.length} folders discovered. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.`,
         "info"
       );
       this.addSyncJob(`Connectivity verification for ${account.address}`, "IMAP and SMTP verification completed.", "complete");
 
       return this.getWorkspaceSnapshot(context);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown provider verification failure.";
+      const message = describeTransportError(
+        error,
+        "IMAP",
+        account.incomingServer,
+        account.incomingPort
+      );
       this.database
         .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
         .run("attention", `Verification failed ${displayTime()}`, accountId);
@@ -724,64 +761,85 @@ SMTP:
       throw new Error("Recipient address is required before sending.");
     }
 
-    await sendPlainTextMessage({
-      username: account.username,
-      password: account.password,
-      fromAddress: account.address,
-      fromName: account.name,
-      outgoingServer: account.outgoingServer,
-      outgoingPort: account.outgoingPort,
-      to: input.to.trim(),
-      subject,
-      body
-    });
+    const sentFolderId = this.ensureFolder(input.accountId, "Sent", "sent", "local");
 
-    const createdAt = nowIso();
-    const threadId = makeId("thread");
-
-    this.database
-      .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim()]), createdAt);
-
-    this.database
-      .prepare(`
-        INSERT INTO messages (
-          id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, verified, content_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        makeId("message"),
-        threadId,
-        input.accountId,
-        "folder-sent",
-        account.name,
-        account.address,
+    try {
+      await sendPlainTextMessage({
+        username: account.username,
+        password: account.password,
+        fromAddress: account.address,
+        fromName: account.name,
+        outgoingServer: account.outgoingServer,
+        outgoingPort: account.outgoingPort,
+        outgoingSecurity: account.outgoingSecurity,
+        outgoingAuthMethod: account.outgoingAuthMethod,
+        to: input.to.trim(),
         subject,
-        textPreview(body || "Empty message"),
-        "Sent",
-        displayTime(),
-        0,
-        "encrypted",
-        `Today, ${displayTime()}`,
-        `To: ${input.to.trim()}\n\n${body || "Empty message"}`,
-        1,
-        "plain",
-        createdAt
+        body
+      });
+
+      const createdAt = nowIso();
+      const threadId = makeId("thread");
+
+      this.database
+        .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim()]), createdAt);
+
+      this.database
+        .prepare(`
+          INSERT INTO messages (
+            id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
+            unread, trust, sent_at, body, verified, content_mode, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          makeId("message"),
+          threadId,
+          input.accountId,
+          sentFolderId,
+          account.name,
+          account.address,
+          subject,
+          textPreview(body || "Empty message"),
+          "Sent",
+          displayTime(),
+          0,
+          "encrypted",
+          `Today, ${displayTime()}`,
+          `To: ${input.to.trim()}\n\n${body || "Empty message"}`,
+          1,
+          "plain",
+          createdAt
+        );
+
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("online", `Sent ${displayTime()}`, input.accountId);
+
+      this.addLedgerEntry(
+        "Outbound message submitted",
+        `${account.address} sent a message to ${input.to.trim()} through ${account.outgoingServer}:${account.outgoingPort}.`,
+        "info"
+      );
+      this.addSyncJob(`Outbound delivery for ${account.address}`, `Message submitted to ${input.to.trim()}.`, "complete");
+
+      return this.getWorkspaceSnapshot(context);
+    } catch (error) {
+      const message = describeTransportError(
+        error,
+        "SMTP",
+        account.outgoingServer,
+        account.outgoingPort
       );
 
-    this.database
-      .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
-      .run("online", `Sent ${displayTime()}`, input.accountId);
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("attention", `Send failed ${displayTime()}`, input.accountId);
 
-    this.addLedgerEntry(
-      "Outbound message submitted",
-      `${account.address} sent a message to ${input.to.trim()} through ${account.outgoingServer}:${account.outgoingPort}.`,
-      "info"
-    );
-    this.addSyncJob(`Outbound delivery for ${account.address}`, `Message submitted to ${input.to.trim()}.`, "complete");
-
-    return this.getWorkspaceSnapshot(context);
+      this.addLedgerEntry("Outbound delivery failed", `${account.address}: ${message}`, "critical");
+      this.addSyncJob(`Outbound delivery for ${account.address}`, message, "complete");
+      throw new Error(message);
+    }
   }
 
   close() {

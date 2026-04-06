@@ -1,6 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import { once } from "node:events";
+import type { SmtpAuthMethod, TransportSecurity } from "../shared/contracts.js";
 
 type SocketLike = net.Socket | tls.TLSSocket;
 
@@ -10,8 +11,11 @@ type AccountConnectionInput = {
   address: string;
   incomingServer: string;
   incomingPort: number;
+  incomingSecurity: TransportSecurity;
   outgoingServer: string;
   outgoingPort: number;
+  outgoingSecurity: TransportSecurity;
+  outgoingAuthMethod: SmtpAuthMethod;
 };
 
 export type VerificationSummary = {
@@ -19,6 +23,10 @@ export type VerificationSummary = {
     greeting: string;
     messages?: number;
     unseen?: number;
+    folders: Array<{
+      name: string;
+      kind: "inbox" | "drafts" | "sent" | "archive" | "custom";
+    }>;
   };
   smtp: {
     secured: boolean;
@@ -33,6 +41,8 @@ export type SendMessageInput = {
   fromName: string;
   outgoingServer: string;
   outgoingPort: number;
+  outgoingSecurity: TransportSecurity;
+  outgoingAuthMethod: SmtpAuthMethod;
   to: string;
   subject: string;
   body: string;
@@ -44,6 +54,43 @@ type Reply = {
 };
 
 const TIMEOUT_MS = 15000;
+
+const getErrorCode = (error: unknown) =>
+  typeof error === "object" && error && "code" in error && typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : "";
+
+export const describeTransportError = (
+  error: unknown,
+  protocol: "IMAP" | "SMTP",
+  host: string,
+  port: number
+) => {
+  const aggregateErrors =
+    typeof error === "object" && error && "errors" in error && Array.isArray((error as { errors?: unknown[] }).errors)
+      ? (error as { errors: unknown[] }).errors
+      : [];
+  const codes = new Set([getErrorCode(error), ...aggregateErrors.map((entry) => getErrorCode(entry))].filter(Boolean));
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (codes.has("ETIMEDOUT") || codes.has("ENETUNREACH") || codes.has("EHOSTUNREACH")) {
+    return `Could not reach the ${protocol} server at ${host}:${port}. Check the host, port, firewall, and selected security mode.`;
+  }
+
+  if (codes.has("ECONNREFUSED")) {
+    return `The ${protocol} server at ${host}:${port} refused the connection. Check the port and whether SSL/TLS or STARTTLS matches the provider settings.`;
+  }
+
+  if (codes.has("ENOTFOUND")) {
+    return `The ${protocol} host ${host} could not be resolved. Check the server name for typos.`;
+  }
+
+  if (/AUTH/i.test(message) || /\b535\b/.test(message) || /\b534\b/.test(message)) {
+    return `${protocol} authentication failed. Check the username, password or app password, and the selected authentication method.`;
+  }
+
+  return message;
+};
 
 const withTimeout = async <T>(promise: Promise<T>, label: string) => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -91,6 +138,25 @@ export const parseImapStatusLine = (line: string) => {
   }
 
   return result;
+};
+
+export const parseImapListLine = (line: string) => {
+  const match = /^\* LIST \(([^)]*)\) "(.*)" "?(.+?)"?$/.exec(line.trim());
+  if (!match) {
+    return null;
+  }
+
+  const attributes = match[1]
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((attribute) => attribute.replace(/^\\/, "").toLowerCase());
+
+  return {
+    attributes,
+    delimiter: match[2],
+    name: match[3]
+  };
 };
 
 export const parseSmtpCapabilities = (reply: Reply) =>
@@ -304,11 +370,43 @@ const runImapCommand = async (socket: LineSocket, tag: string, command: string) 
   return lines;
 };
 
-const authenticateSmtp = async (socket: LineSocket, capabilities: string[], username: string, password: string) => {
+const classifyImapFolder = (name: string, attributes: string[]) => {
+  const normalizedName = name.toLowerCase();
+
+  if (attributes.includes("inbox") || normalizedName === "inbox") {
+    return "inbox" as const;
+  }
+
+  if (attributes.includes("drafts") || normalizedName.includes("draft")) {
+    return "drafts" as const;
+  }
+
+  if (attributes.includes("sent") || normalizedName.includes("sent")) {
+    return "sent" as const;
+  }
+
+  if (attributes.includes("archive") || normalizedName.includes("archive")) {
+    return "archive" as const;
+  }
+
+  return "custom" as const;
+};
+
+const authenticateSmtp = async (
+  socket: LineSocket,
+  capabilities: string[],
+  username: string,
+  password: string,
+  preferredMethod: SmtpAuthMethod
+) => {
   const authCapability = capabilities.find((capability) => capability.toUpperCase().startsWith("AUTH "));
   const authValue = authCapability?.toUpperCase() ?? "";
 
-  if (authValue.includes("PLAIN")) {
+  if (preferredMethod === "none") {
+    return "NONE";
+  }
+
+  if ((preferredMethod === "auto" || preferredMethod === "plain") && authValue.includes("PLAIN")) {
     const payload = Buffer.from(`\u0000${username}\u0000${password}`, "utf8").toString("base64");
     socket.write(`AUTH PLAIN ${payload}\r\n`);
     const reply = await socket.readReply();
@@ -316,7 +414,7 @@ const authenticateSmtp = async (socket: LineSocket, capabilities: string[], user
     return "PLAIN";
   }
 
-  if (authValue.includes("LOGIN")) {
+  if ((preferredMethod === "auto" || preferredMethod === "login") && authValue.includes("LOGIN")) {
     socket.write("AUTH LOGIN\r\n");
     let reply = await socket.readReply();
     assertSmtpReply(reply, 334, "SMTP AUTH LOGIN username prompt");
@@ -331,31 +429,54 @@ const authenticateSmtp = async (socket: LineSocket, capabilities: string[], user
     return "LOGIN";
   }
 
+  if (preferredMethod === "plain" || preferredMethod === "login") {
+    throw new Error(`SMTP server does not advertise the requested AUTH method: ${preferredMethod.toUpperCase()}.`);
+  }
+
   throw new Error("SMTP server does not advertise an AUTH method supported by this client.");
 };
 
 const connectImap = async (input: AccountConnectionInput) => {
-  const secureSocket = await createSecureSocket(input.incomingServer, input.incomingPort);
-  const socket = new LineSocket(secureSocket);
+  const baseSocket =
+    input.incomingSecurity === "ssl_tls"
+      ? await createSecureSocket(input.incomingServer, input.incomingPort)
+      : await createPlainSocket(input.incomingServer, input.incomingPort);
+  const socket = new LineSocket(baseSocket);
 
   try {
     const greeting = await socket.readLine();
+
+    if (input.incomingSecurity === "starttls") {
+      await runImapCommand(socket, "A0000", "STARTTLS");
+      await socket.upgradeToTls(input.incomingServer);
+    }
+
     const loginLines = await runImapCommand(
       socket,
       "A0001",
       `LOGIN ${escapeImapString(input.username)} ${escapeImapString(input.password)}`
     );
     const statusLines = await runImapCommand(socket, "A0002", "STATUS INBOX (MESSAGES UNSEEN)");
-    await runImapCommand(socket, "A0003", "LOGOUT");
+    const folderLines = await runImapCommand(socket, "A0003", 'LIST "" "*"');
+    await runImapCommand(socket, "A0004", "LOGOUT");
 
     const statusLine = statusLines.find((line) => line.startsWith("* STATUS"));
     const parsedStatus = statusLine ? parseImapStatusLine(statusLine) : {};
+    const folders = folderLines
+      .filter((line) => line.startsWith("* LIST"))
+      .map((line) => parseImapListLine(line))
+      .filter((folder): folder is NonNullable<ReturnType<typeof parseImapListLine>> => Boolean(folder))
+      .map((folder) => ({
+        name: folder.name,
+        kind: classifyImapFolder(folder.name, folder.attributes)
+      }));
 
     return {
       greeting,
       loginLines,
       messages: parsedStatus.MESSAGES,
-      unseen: parsedStatus.UNSEEN
+      unseen: parsedStatus.UNSEEN,
+      folders
     };
   } finally {
     socket.close();
@@ -363,7 +484,7 @@ const connectImap = async (input: AccountConnectionInput) => {
 };
 
 const connectSmtp = async (input: AccountConnectionInput) => {
-  const secureTransport = input.outgoingPort === 465;
+  const secureTransport = input.outgoingSecurity === "ssl_tls";
   const baseSocket = secureTransport
     ? await createSecureSocket(input.outgoingServer, input.outgoingPort)
     : await createPlainSocket(input.outgoingServer, input.outgoingPort);
@@ -381,7 +502,11 @@ const connectSmtp = async (input: AccountConnectionInput) => {
     let capabilities = parseSmtpCapabilities(reply);
     let secured = secureTransport;
 
-    if (!secured && capabilities.some((capability) => capability.toUpperCase() === "STARTTLS")) {
+    if (
+      input.outgoingSecurity === "starttls" &&
+      !secured &&
+      capabilities.some((capability) => capability.toUpperCase() === "STARTTLS")
+    ) {
       socket.write("STARTTLS\r\n");
       reply = await socket.readReply();
       assertSmtpReply(reply, 220, "SMTP STARTTLS");
@@ -394,7 +519,13 @@ const connectSmtp = async (input: AccountConnectionInput) => {
       capabilities = parseSmtpCapabilities(reply);
     }
 
-    const authMethod = await authenticateSmtp(socket, capabilities, input.username, input.password);
+    const authMethod = await authenticateSmtp(
+      socket,
+      capabilities,
+      input.username,
+      input.password,
+      input.outgoingAuthMethod
+    );
 
     socket.write("QUIT\r\n");
     await socket.readReply();
@@ -409,28 +540,42 @@ const connectSmtp = async (input: AccountConnectionInput) => {
 };
 
 export const verifyAccountConnection = async (input: AccountConnectionInput): Promise<VerificationSummary> => {
-  const imap = await connectImap(input);
-  const smtp = await connectSmtp(input);
+  let imap;
+  try {
+    imap = await connectImap(input);
+  } catch (error) {
+    throw new Error(describeTransportError(error, "IMAP", input.incomingServer, input.incomingPort));
+  }
+
+  let smtp;
+  try {
+    smtp = await connectSmtp(input);
+  } catch (error) {
+    throw new Error(describeTransportError(error, "SMTP", input.outgoingServer, input.outgoingPort));
+  }
 
   return {
     imap: {
       greeting: imap.greeting,
       messages: imap.messages,
-      unseen: imap.unseen
+      unseen: imap.unseen,
+      folders: imap.folders
     },
     smtp
   };
 };
 
 export const sendPlainTextMessage = async (input: SendMessageInput) => {
-  const secureTransport = input.outgoingPort === 465;
-  const baseSocket = secureTransport
-    ? await createSecureSocket(input.outgoingServer, input.outgoingPort)
-    : await createPlainSocket(input.outgoingServer, input.outgoingPort);
-
-  const socket = new LineSocket(baseSocket);
+  let socket: LineSocket | null = null;
 
   try {
+    const secureTransport = input.outgoingSecurity === "ssl_tls";
+    const baseSocket = secureTransport
+      ? await createSecureSocket(input.outgoingServer, input.outgoingPort)
+      : await createPlainSocket(input.outgoingServer, input.outgoingPort);
+
+    socket = new LineSocket(baseSocket);
+
     let reply = await socket.readReply();
     assertSmtpReply(reply, 220, "SMTP greeting");
 
@@ -439,7 +584,11 @@ export const sendPlainTextMessage = async (input: SendMessageInput) => {
     assertSmtpReply(reply, 250, "SMTP EHLO");
 
     let capabilities = parseSmtpCapabilities(reply);
-    if (!secureTransport && capabilities.some((capability) => capability.toUpperCase() === "STARTTLS")) {
+    if (
+      input.outgoingSecurity === "starttls" &&
+      !secureTransport &&
+      capabilities.some((capability) => capability.toUpperCase() === "STARTTLS")
+    ) {
       socket.write("STARTTLS\r\n");
       reply = await socket.readReply();
       assertSmtpReply(reply, 220, "SMTP STARTTLS");
@@ -451,7 +600,7 @@ export const sendPlainTextMessage = async (input: SendMessageInput) => {
       capabilities = parseSmtpCapabilities(reply);
     }
 
-    await authenticateSmtp(socket, capabilities, input.username, input.password);
+    await authenticateSmtp(socket, capabilities, input.username, input.password, input.outgoingAuthMethod);
 
     socket.write(`MAIL FROM:<${input.fromAddress}>\r\n`);
     reply = await socket.readReply();
@@ -471,7 +620,9 @@ export const sendPlainTextMessage = async (input: SendMessageInput) => {
 
     socket.write("QUIT\r\n");
     await socket.readReply();
+  } catch (error) {
+    throw new Error(describeTransportError(error, "SMTP", input.outgoingServer, input.outgoingPort));
   } finally {
-    socket.close();
+    socket?.close();
   }
 };

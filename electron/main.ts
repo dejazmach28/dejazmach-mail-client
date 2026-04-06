@@ -18,6 +18,8 @@ let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let mailService: MailService | null = null;
 
+const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : "Unknown application error.");
+
 const requireMailService = () => {
   if (!mailService) {
     throw new Error("Mail service is not ready.");
@@ -29,6 +31,13 @@ const requireMailService = () => {
 const getPolicyInput = () => ({
   appUrl,
   environment
+});
+
+const createWorkspaceContext = () => ({
+  version: app.getVersion(),
+  platform: process.platform,
+  environment,
+  packaged: app.isPackaged
 });
 
 const configureSessionPolicy = () => {
@@ -151,7 +160,7 @@ const createMainWindow = () => {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      sandbox: true,
+      sandbox: false,
       nodeIntegration: false,
       webviewTag: false,
       webSecurity: true,
@@ -249,6 +258,12 @@ if (process.platform === "linux") {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
   app.commandLine.appendSwitch("disable-gpu-compositing");
+
+  // AppImage mounts cannot preserve the setuid sandbox helper mode reliably.
+  // Fall back to the namespace sandbox path instead of aborting at launch.
+  if (process.env.APPIMAGE) {
+    app.commandLine.appendSwitch("disable-setuid-sandbox");
+  }
 }
 
 app.whenReady().then(async () => {
@@ -265,50 +280,65 @@ app.whenReady().then(async () => {
     });
   });
 
-  ipcMain.handle("app:get-workspace-snapshot", () =>
-    requireMailService().getWorkspaceSnapshot({
-      version: app.getVersion(),
-      platform: process.platform,
-      environment,
-      packaged: app.isPackaged
-    })
-  );
+  ipcMain.handle("app:get-workspace-snapshot", () => requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
 
-  ipcMain.handle("app:create-account", (_event, input) =>
-    requireMailService().createAccount(input, {
-      version: app.getVersion(),
-      platform: process.platform,
-      environment,
-      packaged: app.isPackaged
-    })
-  );
+  ipcMain.handle("app:create-account", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().createAccount(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
 
-  ipcMain.handle("app:create-draft", (_event, input) =>
-    requireMailService().createDraft(input, {
-      version: app.getVersion(),
-      platform: process.platform,
-      environment,
-      packaged: app.isPackaged
-    })
-  );
+  ipcMain.handle("app:create-draft", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().createDraft(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
 
-  ipcMain.handle("app:verify-account", (_event, accountId) =>
-    requireMailService().verifyAccount(accountId, {
-      version: app.getVersion(),
-      platform: process.platform,
-      environment,
-      packaged: app.isPackaged
-    })
-  );
+  ipcMain.handle("app:verify-account", async (_event, accountId) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().verifyAccount(accountId, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
 
-  ipcMain.handle("app:send-message", (_event, input) =>
-    requireMailService().sendMessage(input, {
-      version: app.getVersion(),
-      platform: process.platform,
-      environment,
-      packaged: app.isPackaged
-    })
-  );
+  ipcMain.handle("app:send-message", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().sendMessage(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
 
   if (process.platform === "win32") {
     app.setAppUserModelId("com.dejazmach.mail");

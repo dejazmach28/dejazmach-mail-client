@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPlainTextMessage, parseImapStatusLine, parseSmtpCapabilities } from "./providerClient.js";
+import { buildPlainTextMessage, parseImapListLine, parseImapStatusLine, parseSmtpCapabilities } from "./providerClient.js";
 
 test("parseImapStatusLine extracts numeric counters", () => {
   assert.deepEqual(parseImapStatusLine("* STATUS INBOX (MESSAGES 12 UNSEEN 4)"), {
     MESSAGES: 12,
     UNSEEN: 4
+  });
+});
+
+test("parseImapListLine extracts folder name and attributes", () => {
+  assert.deepEqual(parseImapListLine('* LIST (\\HasNoChildren \\Sent) "/" "Sent Items"'), {
+    attributes: ["hasnochildren", "sent"],
+    delimiter: "/",
+    name: "Sent Items"
   });
 });
 

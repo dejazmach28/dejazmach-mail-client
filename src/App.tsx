@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import type {
   AccountStatus,
+  ActionResult,
   CreateAccountInput,
   CreateDraftInput,
   LedgerSeverity,
   MailTrust,
-  ReleaseTarget,
   RuntimeEnvironment,
   SecurityStatus,
   SyncStatus,
@@ -47,11 +47,6 @@ const environmentClassMap: Record<RuntimeEnvironment, string> = {
   production: "mini-pill mini-pill-success"
 };
 
-const releaseTargetClassMap: Record<ReleaseTarget["status"], string> = {
-  configured: "mini-pill mini-pill-success",
-  pending: "mini-pill mini-pill-warning"
-};
-
 const initialAccountForm: CreateAccountInput = {
   name: "",
   address: "",
@@ -60,114 +55,52 @@ const initialAccountForm: CreateAccountInput = {
   password: "",
   incomingServer: "",
   incomingPort: 993,
+  incomingSecurity: "ssl_tls",
   outgoingServer: "",
-  outgoingPort: 465
+  outgoingPort: 465,
+  outgoingSecurity: "ssl_tls",
+  outgoingAuthMethod: "auto"
 };
 
-const browserPreviewWorkspace: WorkspaceSnapshot = {
+const emptyWorkspace: WorkspaceSnapshot = {
   shellState: {
     appName: "DejAzmach",
-    version: "preview",
+    version: "local",
     platform: "browser",
     environment: "development",
     packaged: false,
     secureDesktopMode: true,
-    releaseTargets: [
-      {
-        os: "linux",
-        formats: ["AppImage", "deb"],
-        status: "configured",
-        note: "Preview data mirrors the intended desktop release matrix."
-      }
-    ],
-    capabilities: [
-      "Renderer preview contract",
-      "Desktop load-state UI",
-      "Security-first shell messaging"
-    ],
+    releaseTargets: [],
+    capabilities: [],
     securityMetrics: [
       {
-        label: "Renderer isolation",
-        value: "Preview contract",
-        status: "active",
-        detail: "Browser mode mirrors the intended Electron boundary while the UI is being developed."
+        label: "Desktop bridge",
+        value: "Required",
+        status: "monitoring",
+        detail: "Account actions only work when the Electron preload bridge is active."
       },
       {
         label: "Credential storage",
-        value: "Pending OS vault",
+        value: "Main process only",
         status: "monitoring",
-        detail: "Real secret handling belongs in the main process with operating-system-backed storage."
+        detail: "Secrets are kept outside the renderer and only handled by the desktop shell."
       }
     ],
     transparencyLedger: [
       {
-        id: "preview-1",
-        title: "Browser preview data",
-        detail: "The renderer is showing local sample data because Electron preload is not active in a plain browser tab.",
-        occurredAt: "Preview",
+        id: "local-1",
+        title: "Workspace initialized",
+        detail: "No mailbox content is rendered until a real desktop workspace is loaded.",
+        occurredAt: "Local",
         severity: "notice"
       }
     ]
   },
-  accounts: [
-    {
-      id: "preview-account",
-      name: "Preview",
-      address: "preview@dejazmach.app",
-      provider: "Local",
-      status: "online",
-      lastSync: "local",
-      unreadCount: 1,
-      storage: "mock"
-    }
-  ],
-  folders: [
-    { id: "preview-folder", name: "Priority inbox", count: 1, kind: "priority" },
-    { id: "preview-drafts", name: "Shielded drafts", count: 1, kind: "drafts" }
-  ],
-  messages: [
-    {
-      id: "preview-message",
-      threadId: "preview-thread",
-      accountId: "preview-account",
-      folderId: "preview-folder",
-      sender: "Preview shell",
-      subject: "Desktop contract preview",
-      preview: "Electron IPC will replace this browser data when the desktop shell is active.",
-      label: "Preview",
-      time: "Now",
-      unread: true,
-      trust: "trusted"
-    }
-  ],
-  threads: [
-    {
-      id: "preview-thread",
-      subject: "Desktop contract preview",
-      classification: "Preview",
-      participants: ["Preview shell"],
-      messages: [
-        {
-          id: "preview-thread-message",
-          sender: "Preview shell",
-          address: "preview@dejazmach.app",
-          sentAt: "Now",
-          verified: true,
-          body: "Electron preload data replaces this preview when the desktop app is running.",
-          contentMode: "plain"
-        }
-      ]
-    }
-  ],
-  syncJobs: [
-    {
-      id: "preview-sync",
-      title: "Preview mode",
-      detail: "No live mail transport is active in browser mode.",
-      status: "queued",
-      time: "Pending"
-    }
-  ]
+  accounts: [],
+  folders: [],
+  messages: [],
+  threads: [],
+  syncJobs: []
 };
 
 const formatPlatform = (platform: string) => {
@@ -178,10 +111,66 @@ const formatPlatform = (platform: string) => {
   return `${platform.charAt(0).toUpperCase()}${platform.slice(1)}`;
 };
 
+const getAccountFolders = (workspace: WorkspaceSnapshot, accountId: string) =>
+  workspace.folders.filter((folder) => folder.accountId === accountId);
+
+const getFirstFolderId = (workspace: WorkspaceSnapshot, accountId: string) => {
+  if (!accountId) {
+    return "";
+  }
+
+  const folders = getAccountFolders(workspace, accountId);
+  return folders.find((folder) => folder.kind === "inbox")?.id ?? folders[0]?.id ?? "";
+};
+
+const getFolderIdForAccount = (
+  workspace: WorkspaceSnapshot,
+  accountId: string,
+  kind: "inbox" | "drafts" | "sent" | "archive" | "security"
+) => {
+  if (!accountId) {
+    return "";
+  }
+
+  const folders = getAccountFolders(workspace, accountId);
+  return folders.find((folder) => folder.kind === kind)?.id ?? getFirstFolderId(workspace, accountId);
+};
+
+const getFirstThreadId = (workspace: WorkspaceSnapshot, accountId: string, folderId: string) => {
+  if (!accountId || !folderId) {
+    return "";
+  }
+
+  return (
+    workspace.messages.find((message) => message.accountId === accountId && message.folderId === folderId)?.threadId ??
+    workspace.messages.find((message) => message.accountId === accountId)?.threadId ??
+    ""
+  );
+};
+
+const getInitials = (value: string) =>
+  value
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "M";
+
+const unwrapResult = (result: ActionResult<WorkspaceSnapshot>) => {
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+
+  return result.data;
+};
+
 function App() {
-  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(browserPreviewWorkspace);
-  const [selectedFolderId, setSelectedFolderId] = useState(browserPreviewWorkspace.folders[0]?.id ?? "");
-  const [selectedThreadId, setSelectedThreadId] = useState(browserPreviewWorkspace.messages[0]?.threadId ?? "");
+  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [selectedFolderId, setSelectedFolderId] = useState("");
+  const [selectedThreadId, setSelectedThreadId] = useState("");
+  const [activeSurface, setActiveSurface] = useState<"message" | "compose" | "settings">("message");
+  const [searchQuery, setSearchQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -190,26 +179,30 @@ function App() {
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [verifyingAccountId, setVerifyingAccountId] = useState<string | null>(null);
+  const [showAccountSetup, setShowAccountSetup] = useState(false);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
-    accountId: browserPreviewWorkspace.accounts[0]?.id ?? "",
+    accountId: "",
     to: "",
     subject: "",
     body: ""
   });
 
   const applyWorkspace = (nextWorkspace: WorkspaceSnapshot) => {
+    const nextAccountId = nextWorkspace.accounts.some((account) => account.id === selectedAccountId)
+      ? selectedAccountId
+      : (nextWorkspace.accounts[0]?.id ?? "");
+    const nextFolderId = nextWorkspace.folders.some((folder) => folder.id === selectedFolderId)
+      ? selectedFolderId
+      : getFirstFolderId(nextWorkspace, nextAccountId);
+    const nextThreadId = nextWorkspace.threads.some((thread) => thread.id === selectedThreadId)
+      ? selectedThreadId
+      : getFirstThreadId(nextWorkspace, nextAccountId, nextFolderId);
+
     setWorkspace(nextWorkspace);
-    setSelectedFolderId((currentFolderId) =>
-      nextWorkspace.folders.some((folder) => folder.id === currentFolderId)
-        ? currentFolderId
-        : (nextWorkspace.folders[0]?.id ?? "")
-    );
-    setSelectedThreadId((currentThreadId) =>
-      nextWorkspace.threads.some((thread) => thread.id === currentThreadId)
-        ? currentThreadId
-        : (nextWorkspace.messages[0]?.threadId ?? nextWorkspace.threads[0]?.id ?? "")
-    );
+    setSelectedAccountId(nextAccountId);
+    setSelectedFolderId(nextFolderId);
+    setSelectedThreadId(nextThreadId);
     setDraftForm((currentDraft) => ({
       ...currentDraft,
       accountId:
@@ -221,6 +214,7 @@ function App() {
 
   useEffect(() => {
     if (!window.desktopApi) {
+      setLoadError("Desktop bridge unavailable. Launch the packaged Electron app instead of a browser preview.");
       setIsBooting(false);
       return;
     }
@@ -231,29 +225,65 @@ function App() {
         applyWorkspace(nextWorkspace);
       })
       .catch(() => {
-        setLoadError("Desktop data could not be loaded. Showing local preview state instead.");
+        setLoadError("Desktop data could not be loaded.");
       })
       .finally(() => {
         setIsBooting(false);
       });
   }, []);
 
-  const visibleMessages = (() => {
-    const filtered = workspace.messages.filter((message) => message.folderId === selectedFolderId);
-    return filtered.length > 0 ? filtered : workspace.messages;
-  })();
-
+  const hasAccounts = workspace.accounts.length > 0;
+  const selectedAccount =
+    workspace.accounts.find((account) => account.id === selectedAccountId) ?? workspace.accounts[0];
+  const visibleFolders = selectedAccount ? getAccountFolders(workspace, selectedAccount.id) : [];
+  const selectedFolder = visibleFolders.find((folder) => folder.id === selectedFolderId) ?? visibleFolders[0];
+  const accountMessages = selectedAccount
+    ? workspace.messages.filter((message) => message.accountId === selectedAccount.id)
+    : [];
+  const search = searchQuery.trim().toLowerCase();
+  const folderMessages = selectedAccount
+    ? accountMessages.filter((message) => message.folderId === selectedFolder?.id)
+    : [];
+  const visibleMessages = !search
+    ? folderMessages
+    : folderMessages.filter((message) =>
+        [message.sender, message.subject, message.preview, message.label].some((value) =>
+          value.toLowerCase().includes(search)
+        )
+      );
   const selectedThread =
     workspace.threads.find((thread) => thread.id === selectedThreadId) ??
-    workspace.threads.find((thread) => thread.id === visibleMessages[0]?.threadId) ??
-    workspace.threads[0];
+    workspace.threads.find((thread) => thread.id === visibleMessages[0]?.threadId);
+  const recentActivity = workspace.shellState.transparencyLedger.slice(0, 4);
+  const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
+  const recentSyncJobs = workspace.syncJobs.slice(0, 3);
+  const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
 
-  const unreadCount = workspace.messages.filter((message) => message.unread).length;
-  const runningSyncJobs = workspace.syncJobs.filter((job) => job.status === "running").length;
-  const transparencyCount = workspace.shellState.transparencyLedger.length;
-  const selectedFolder =
-    workspace.folders.find((folder) => folder.id === selectedFolderId) ?? workspace.folders[0];
-  const activeAccountCount = workspace.accounts.filter((account) => account.status !== "attention").length;
+  const chooseAccount = (accountId: string) => {
+    const nextFolderId = getFirstFolderId(workspace, accountId);
+    setSelectedAccountId(accountId);
+    setSelectedFolderId(nextFolderId);
+    setSelectedThreadId(getFirstThreadId(workspace, accountId, nextFolderId));
+    setActiveSurface("message");
+  };
+
+  const chooseFolder = (folderId: string) => {
+    if (!selectedAccount) {
+      return;
+    }
+
+    setSelectedFolderId(folderId);
+    setSelectedThreadId(getFirstThreadId(workspace, selectedAccount.id, folderId));
+    setActiveSurface("message");
+  };
+
+  const openComposer = (accountId = selectedAccount?.id ?? workspace.accounts[0]?.id ?? "") => {
+    setDraftForm((currentDraft) => ({
+      ...currentDraft,
+      accountId
+    }));
+    setActiveSurface("compose");
+  };
 
   const handleAccountSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -268,9 +298,21 @@ function App() {
     setIsSavingAccount(true);
 
     try {
-      const nextWorkspace = await window.desktopApi.createAccount(accountForm);
+      const nextWorkspace = unwrapResult(await window.desktopApi.createAccount(accountForm));
+      const createdAccount = nextWorkspace.accounts[nextWorkspace.accounts.length - 1];
       applyWorkspace(nextWorkspace);
+
+      if (createdAccount) {
+        const nextFolderId = getFirstFolderId(nextWorkspace, createdAccount.id);
+        setSelectedAccountId(createdAccount.id);
+        setSelectedFolderId(nextFolderId);
+        setSelectedThreadId(getFirstThreadId(nextWorkspace, createdAccount.id, nextFolderId));
+        setDraftForm((currentDraft) => ({ ...currentDraft, accountId: createdAccount.id }));
+      }
+
       setAccountForm(initialAccountForm);
+      setShowAccountSetup(false);
+      setActiveSurface("message");
       setActionNotice(`Stored ${accountForm.address} in the local account vault.`);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Account onboarding failed.");
@@ -292,20 +334,20 @@ function App() {
     setIsSavingDraft(true);
 
     try {
-      const nextWorkspace = await window.desktopApi.createDraft(draftForm);
+      const nextWorkspace = unwrapResult(await window.desktopApi.createDraft(draftForm));
+      const nextFolderId = getFolderIdForAccount(nextWorkspace, draftForm.accountId, "drafts");
       applyWorkspace(nextWorkspace);
-      setSelectedFolderId("folder-drafts");
-      const latestDraft = nextWorkspace.messages.find((message) => message.folderId === "folder-drafts");
-      if (latestDraft) {
-        setSelectedThreadId(latestDraft.threadId);
-      }
+      setSelectedAccountId(draftForm.accountId);
+      setSelectedFolderId(nextFolderId);
+      setSelectedThreadId(getFirstThreadId(nextWorkspace, draftForm.accountId, nextFolderId));
       setDraftForm((currentDraft) => ({
         ...currentDraft,
         to: "",
         subject: "",
         body: ""
       }));
-      setActionNotice("Draft persisted in the local SQLite workspace.");
+      setActiveSurface("message");
+      setActionNotice("Draft stored locally.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Draft persistence failed.");
     } finally {
@@ -325,10 +367,17 @@ function App() {
     setVerifyingAccountId(accountId);
 
     try {
-      const nextWorkspace = await window.desktopApi.verifyAccount(accountId);
-      applyWorkspace(nextWorkspace);
-      setSelectedFolderId("folder-security");
-      setActionNotice("Provider verification completed.");
+      const result = await window.desktopApi.verifyAccount(accountId);
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      const nextWorkspace = unwrapResult(result);
+      const nextFolderId = getFolderIdForAccount(nextWorkspace, accountId, "inbox");
+      setSelectedAccountId(accountId);
+      setSelectedFolderId(nextFolderId);
+      setSelectedThreadId(getFirstThreadId(nextWorkspace, accountId, nextFolderId));
+      setActiveSurface("message");
+      setActionNotice("Account verification completed and server folders were refreshed.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Provider verification failed.");
     } finally {
@@ -348,20 +397,23 @@ function App() {
     setIsSendingMessage(true);
 
     try {
-      const nextWorkspace = await window.desktopApi.sendMessage(draftForm);
-      applyWorkspace(nextWorkspace);
-      setSelectedFolderId("folder-sent");
-      const latestSent = nextWorkspace.messages.find((message) => message.folderId === "folder-sent");
-      if (latestSent) {
-        setSelectedThreadId(latestSent.threadId);
+      const result = await window.desktopApi.sendMessage(draftForm);
+      if (result.data) {
+        applyWorkspace(result.data);
       }
+      const nextWorkspace = unwrapResult(result);
+      const nextFolderId = getFolderIdForAccount(nextWorkspace, draftForm.accountId, "sent");
+      setSelectedAccountId(draftForm.accountId);
+      setSelectedFolderId(nextFolderId);
+      setSelectedThreadId(getFirstThreadId(nextWorkspace, draftForm.accountId, nextFolderId));
       setDraftForm((currentDraft) => ({
         ...currentDraft,
         to: "",
         subject: "",
         body: ""
       }));
-      setActionNotice("Message submitted through the provider SMTP transport.");
+      setActiveSurface("message");
+      setActionNotice("Message submitted through SMTP.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message delivery failed.");
     } finally {
@@ -369,485 +421,61 @@ function App() {
     }
   };
 
-  return (
-    <main className="app-shell">
-      {isBooting ? (
-        <div className="boot-overlay" aria-live="polite">
-          <div className="boot-card glass-card">
-            <span className="eyebrow">DejAzmach desktop shell</span>
-            <h2>Preparing secure workspace</h2>
-            <p>
-              Loading the renderer inside a restricted Electron boundary. Navigation, remote requests,
-              and unmanaged downloads stay denied while the shell starts.
-            </p>
-          </div>
-        </div>
-      ) : null}
-
-      <header className="app-header glass-card">
-        <div className="brand-panel">
-          <div className="brand-mark" aria-hidden="true">
-            D
-          </div>
-          <div className="brand-copy">
-            <span className="eyebrow">DejAzmach desktop mail</span>
-            <h1>{selectedFolder?.name ?? "Inbox"}</h1>
-            <p>
-              A clearer desktop workspace for real mail work: account health on the left,
-              message flow in the middle, and conversation detail without visual clutter.
-            </p>
-          </div>
-        </div>
-
-        <div className="search-card" aria-hidden="true">
-          <span className="search-placeholder">Search and shortcuts</span>
-          <small>Layout reserved for command palette and indexed search.</small>
-        </div>
-
-        <div className="header-stats">
-          <div className="header-stat">
-            <span className="card-label">Unread</span>
-            <strong>{unreadCount}</strong>
-            <p>Messages that still need attention.</p>
-          </div>
-          <div className="header-stat">
-            <span className="card-label">Accounts</span>
-            <strong>{activeAccountCount}</strong>
-            <p>Healthy or syncing mailboxes.</p>
-          </div>
-          <div className="header-stat">
-            <span className="card-label">Runtime</span>
-            <strong>{workspace.shellState.packaged ? "Desktop build" : "Dev shell"}</strong>
-            <p>
-              {formatPlatform(workspace.shellState.platform)} · {workspace.shellState.version}
-            </p>
-          </div>
-        </div>
+  const renderAccountForm = (title: string, subtitle: string, compact = false) => (
+    <article className={compact ? "modal-card onboarding-card" : "onboarding-card"}>
+      <header className="onboarding-header">
+        <span className="eyebrow">{subtitle}</span>
+        <h2>{title}</h2>
+        <p>Enter the mailbox details exactly as provided by your mail host. Folders are discovered from IMAP after verification.</p>
       </header>
 
-      {loadError || actionError || actionNotice ? (
-        <section className="notice-strip">
-          {loadError ? <p className="inline-notice">{loadError}</p> : null}
-          {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
-          {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
-        </section>
-      ) : null}
-
-      <section className="mail-layout">
-        <aside className="glass-card nav-panel">
-          <section className="panel-section workspace-summary">
-            <span className="card-label">Workspace</span>
-            <h2>Mailboxes</h2>
-
-            <div className="summary-grid">
-              <div className="summary-card">
-                <strong>{workspace.accounts.length}</strong>
-                <span>configured</span>
-              </div>
-              <div className="summary-card">
-                <strong>{runningSyncJobs}</strong>
-                <span>active sync jobs</span>
-              </div>
-              <div className="summary-card">
-                <strong>{transparencyCount}</strong>
-                <span>ledger events</span>
-              </div>
-            </div>
-
-            <div className="command-pills">
-              <span className={environmentClassMap[workspace.shellState.environment]}>
-                {workspace.shellState.environment}
-              </span>
-              <span className="mini-pill mini-pill-neutral">{formatPlatform(workspace.shellState.platform)}</span>
-              <span className="mini-pill mini-pill-success">
-                {workspace.shellState.secureDesktopMode ? "desktop mode" : "preview"}
-              </span>
-            </div>
-          </section>
-
-          <section className="panel-section">
-            <div className="section-heading compact-heading">
-              <div>
-                <span className="card-label">Accounts</span>
-                <h2>Connected inboxes</h2>
-              </div>
-            </div>
-
-            <div className="account-list">
-              {workspace.accounts.map((account) => (
-                <article className="account-card" key={account.id}>
-                  <div className="account-topline">
-                    <div>
-                      <strong>{account.name}</strong>
-                      <p>{account.address}</p>
-                    </div>
-                    <span className={accountClassMap[account.status]}>{account.status}</span>
-                  </div>
-
-                  <div className="account-meta">
-                    <span>{account.provider}</span>
-                    <span>{account.unreadCount} unread</span>
-                  </div>
-
-                  <p className="account-footnote">
-                    Last sync {account.lastSync}. Secrets stored in {account.storage}.
-                  </p>
-
-                  <button
-                    className="secondary-button"
-                    disabled={verifyingAccountId === account.id}
-                    onClick={() => void handleVerifyAccount(account.id)}
-                    type="button"
-                  >
-                    {verifyingAccountId === account.id ? "Verifying..." : "Verify account"}
-                  </button>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel-section">
-            <div className="section-heading compact-heading">
-              <div>
-                <span className="card-label">Folders</span>
-                <h2>Navigation</h2>
-              </div>
-            </div>
-
-            <div className="folder-list" aria-label="Folders">
-              {workspace.folders.map((folder) => (
-                <button
-                  className={folder.id === selectedFolderId ? "folder-button folder-button-active" : "folder-button"}
-                  key={folder.id}
-                  onClick={() => {
-                    setSelectedFolderId(folder.id);
-                    const nextMessage = workspace.messages.find((message) => message.folderId === folder.id);
-                    if (nextMessage) {
-                      setSelectedThreadId(nextMessage.threadId);
-                    }
-                  }}
-                  type="button"
-                >
-                  <span className="folder-copy">
-                    <strong>{folder.name}</strong>
-                    <small>{folder.kind}</small>
-                  </span>
-                  <span className="folder-count">{folder.count}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        </aside>
-
-        <section className="glass-card mail-panel">
-          <header className="section-heading">
-            <div>
-              <span className="card-label">Message list</span>
-              <h2>{selectedFolder?.name ?? "Inbox"}</h2>
-            </div>
-            <div className="list-meta">
-              <span className="mini-pill mini-pill-neutral">{visibleMessages.length} conversations</span>
-              <span className="mini-pill mini-pill-warning">{unreadCount} unread</span>
-            </div>
-          </header>
-
-          <div className="message-list">
-            {visibleMessages.map((message) => (
-              <button
-                className={message.threadId === selectedThread?.id ? "message-card message-card-active" : "message-card"}
-                key={message.id}
-                onClick={() => setSelectedThreadId(message.threadId)}
-                type="button"
-              >
-                <div className="message-topline">
-                  <strong>{message.sender}</strong>
-                  <span>{message.time}</span>
-                </div>
-                <h3>
-                  {message.subject}
-                  {message.unread ? <span className="unread-dot" aria-hidden="true" /> : null}
-                </h3>
-                <p>{message.preview}</p>
-                <div className="message-footer">
-                  <span className="tag">{message.label}</span>
-                  <span className={trustClassMap[message.trust]}>{message.trust}</span>
-                </div>
-              </button>
-            ))}
+      <form className="account-form" onSubmit={handleAccountSubmit}>
+        <section className="form-section">
+          <div className="section-heading-row">
+            <strong>Identity</strong>
+            <span>How this account appears in DejAzmach.</span>
           </div>
-        </section>
 
-        <section className="reader-column">
-          <article className="glass-card thread-card">
-            <header className="section-heading">
-              <div>
-                <span className="card-label">Conversation</span>
-                <h2>{selectedThread?.subject ?? "No thread selected"}</h2>
-              </div>
-              {selectedThread ? (
-                <span className="mini-pill mini-pill-neutral">{selectedThread.classification}</span>
-              ) : null}
-            </header>
-
-            <div className="thread-summary">
-              <div className="thread-summary-card">
-                <span className="card-label">Participants</span>
-                <strong>{selectedThread?.participants.length ?? 0}</strong>
-              </div>
-              <div className="thread-summary-card">
-                <span className="card-label">Messages</span>
-                <strong>{selectedThread?.messages.length ?? 0}</strong>
-              </div>
-              <div className="thread-summary-card">
-                <span className="card-label">Current folder</span>
-                <strong>{selectedFolder?.name ?? "Unknown"}</strong>
-              </div>
-            </div>
-
-            <div className="participants">
-              {selectedThread?.participants.map((participant) => (
-                <span className="participant-chip" key={participant}>
-                  {participant}
-                </span>
-              )) ?? null}
-            </div>
-
-            <div className="thread-stream">
-              {selectedThread?.messages.map((message) => (
-                <article className="thread-message" key={message.id}>
-                  <div className="thread-topline">
-                    <div>
-                      <strong>{message.sender}</strong>
-                      <p>{message.address}</p>
-                    </div>
-                    <div className="thread-topline-meta">
-                      <span>{message.sentAt}</span>
-                      <span className={message.verified ? "mini-pill mini-pill-success" : "mini-pill mini-pill-warning"}>
-                        {message.verified ? "verified" : "review"}
-                      </span>
-                    </div>
-                  </div>
-
-                  {message.contentMode === "html-blocked" ? (
-                    <div className="thread-warning">
-                      HTML content was blocked. Only a safe plain-text extraction is shown.
-                    </div>
-                  ) : null}
-
-                  <pre className="thread-body">{message.body}</pre>
-                </article>
-              )) ?? null}
-            </div>
-          </article>
-
-          <div className="reader-support-grid">
-            <article className="glass-card compose-card">
-              <header className="section-heading">
-                <div>
-                  <span className="card-label">Compose</span>
-                  <h2>Draft message</h2>
-                </div>
-              </header>
-
-              <form className="stack-form" onSubmit={handleDraftSubmit}>
-                <label className="field">
-                  <span>Account</span>
-                  <select
-                    onChange={(event) => setDraftForm((current) => ({ ...current, accountId: event.target.value }))}
-                    required
-                    value={draftForm.accountId}
-                  >
-                    {workspace.accounts.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name} · {account.address}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>To</span>
-                  <input
-                    onChange={(event) => setDraftForm((current) => ({ ...current, to: event.target.value }))}
-                    placeholder="recipient@example.com"
-                    value={draftForm.to}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Subject</span>
-                  <input
-                    onChange={(event) => setDraftForm((current) => ({ ...current, subject: event.target.value }))}
-                    value={draftForm.subject}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Body</span>
-                  <textarea
-                    onChange={(event) => setDraftForm((current) => ({ ...current, body: event.target.value }))}
-                    rows={7}
-                    value={draftForm.body}
-                  />
-                </label>
-
-                <div className="button-row">
-                  <button className="primary-button" disabled={isSavingDraft} type="submit">
-                    {isSavingDraft ? "Saving draft..." : "Save draft"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={isSendingMessage}
-                    onClick={() => void handleSendMessage()}
-                    type="button"
-                  >
-                    {isSendingMessage ? "Sending..." : "Send now"}
-                  </button>
-                </div>
-              </form>
-            </article>
-
-            <article className="glass-card trust-card">
-              <section className="support-section">
-                <header className="section-heading compact-heading">
-                  <div>
-                    <span className="card-label">Security</span>
-                    <h2>Trust state</h2>
-                  </div>
-                </header>
-
-                <div className="security-list">
-                  {workspace.shellState.securityMetrics.map((metric) => (
-                    <div className="security-row" key={metric.label}>
-                      <div>
-                        <strong>{metric.label}</strong>
-                        <p>{metric.detail}</p>
-                      </div>
-                      <div className="security-side">
-                        <span className={securityClassMap[metric.status]}>{metric.status}</span>
-                        <span className="security-value">{metric.value}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="support-section support-section-border">
-                <header className="section-heading compact-heading">
-                  <div>
-                    <span className="card-label">Sync</span>
-                    <h2>Queue</h2>
-                  </div>
-                </header>
-
-                <div className="sync-list">
-                  {workspace.syncJobs.map((job) => (
-                    <div className="sync-row" key={job.id}>
-                      <div>
-                        <strong>{job.title}</strong>
-                        <p>{job.detail}</p>
-                      </div>
-                      <div className="security-side">
-                        <span className={syncClassMap[job.status]}>{job.status}</span>
-                        <span className="security-value">{job.time}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </article>
-          </div>
-        </section>
-      </section>
-
-      <section className="workspace-footer">
-        <article className="glass-card setup-card">
-          <header className="section-heading">
-            <div>
-              <span className="card-label">Account onboarding</span>
-              <h2>Add mailbox</h2>
-            </div>
-          </header>
-
-          <form className="stack-form" onSubmit={handleAccountSubmit}>
-            <div className="form-grid">
-              <label className="field">
-                <span>Name</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))}
-                  required
-                  value={accountForm.name}
-                />
-              </label>
-              <label className="field">
-                <span>Address</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, address: event.target.value }))}
-                  required
-                  type="email"
-                  value={accountForm.address}
-                />
-              </label>
-              <label className="field">
-                <span>Provider</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, provider: event.target.value }))}
-                  required
-                  value={accountForm.provider}
-                />
-              </label>
-              <label className="field">
-                <span>Username</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))}
-                  required
-                  value={accountForm.username}
-                />
-              </label>
-              <label className="field">
-                <span>Incoming host</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, incomingServer: event.target.value }))}
-                  required
-                  value={accountForm.incomingServer}
-                />
-              </label>
-              <label className="field">
-                <span>Outgoing host</span>
-                <input
-                  onChange={(event) => setAccountForm((current) => ({ ...current, outgoingServer: event.target.value }))}
-                  required
-                  value={accountForm.outgoingServer}
-                />
-              </label>
-              <label className="field">
-                <span>Incoming port</span>
-                <input
-                  min={1}
-                  onChange={(event) =>
-                    setAccountForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
-                  }
-                  required
-                  type="number"
-                  value={accountForm.incomingPort}
-                />
-              </label>
-              <label className="field">
-                <span>Outgoing port</span>
-                <input
-                  min={1}
-                  onChange={(event) =>
-                    setAccountForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
-                  }
-                  required
-                  type="number"
-                  value={accountForm.outgoingPort}
-                />
-              </label>
-            </div>
+          <div className="form-grid form-grid-two">
+            <label className="field">
+              <span>Display name</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))}
+                required
+                value={accountForm.name}
+              />
+            </label>
 
             <label className="field">
-              <span>Password</span>
+              <span>Email address</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, address: event.target.value }))}
+                required
+                type="email"
+                value={accountForm.address}
+              />
+            </label>
+
+            <label className="field">
+              <span>Provider label</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, provider: event.target.value }))}
+                required
+                value={accountForm.provider}
+              />
+            </label>
+
+            <label className="field">
+              <span>Username</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))}
+                required
+                value={accountForm.username}
+              />
+            </label>
+
+            <label className="field field-full">
+              <span>Password or app password</span>
               <input
                 onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))}
                 required
@@ -855,80 +483,596 @@ function App() {
                 value={accountForm.password}
               />
             </label>
-
-            <button className="primary-button" disabled={isSavingAccount} type="submit">
-              {isSavingAccount ? "Storing account..." : "Store in local vault"}
-            </button>
-          </form>
-        </article>
-
-        <article className="glass-card ledger-card">
-          <header className="section-heading">
-            <div>
-              <span className="card-label">Transparency</span>
-              <h2>Session ledger</h2>
-            </div>
-          </header>
-
-          <div className="ledger-list">
-            {workspace.shellState.transparencyLedger.map((entry) => (
-              <article className="ledger-entry" key={entry.id}>
-                <div className="ledger-topline">
-                  <div>
-                    <strong>{entry.title}</strong>
-                    <p>{entry.detail}</p>
-                  </div>
-                  <div className="security-side">
-                    <span className={ledgerClassMap[entry.severity]}>{entry.severity}</span>
-                    <span className="security-value">{entry.occurredAt}</span>
-                  </div>
-                </div>
-              </article>
-            ))}
           </div>
-        </article>
+        </section>
 
-        <article className="glass-card operations-card">
-          <section className="support-section">
-            <header className="section-heading compact-heading">
-              <div>
-                <span className="card-label">Release targets</span>
-                <h2>Cross-platform</h2>
+        <section className="form-section">
+          <div className="section-heading-row">
+            <strong>Incoming IMAP</strong>
+            <span>Used for folder discovery and mailbox synchronization.</span>
+          </div>
+
+          <div className="form-grid">
+            <label className="field">
+              <span>Server</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, incomingServer: event.target.value }))}
+                required
+                value={accountForm.incomingServer}
+              />
+            </label>
+
+            <label className="field">
+              <span>Port</span>
+              <input
+                min={1}
+                onChange={(event) =>
+                  setAccountForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
+                }
+                required
+                type="number"
+                value={accountForm.incomingPort}
+              />
+            </label>
+
+            <label className="field">
+              <span>Security</span>
+              <select
+                onChange={(event) =>
+                  setAccountForm((current) => ({
+                    ...current,
+                    incomingSecurity: event.target.value as CreateAccountInput["incomingSecurity"]
+                  }))
+                }
+                value={accountForm.incomingSecurity}
+              >
+                <option value="ssl_tls">SSL/TLS</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="plain">Plain</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section className="form-section">
+          <div className="section-heading-row">
+            <strong>Outgoing SMTP</strong>
+            <span>Used for authenticated sending and delivery tests.</span>
+          </div>
+
+          <div className="form-grid">
+            <label className="field">
+              <span>Server</span>
+              <input
+                onChange={(event) => setAccountForm((current) => ({ ...current, outgoingServer: event.target.value }))}
+                required
+                value={accountForm.outgoingServer}
+              />
+            </label>
+
+            <label className="field">
+              <span>Port</span>
+              <input
+                min={1}
+                onChange={(event) =>
+                  setAccountForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
+                }
+                required
+                type="number"
+                value={accountForm.outgoingPort}
+              />
+            </label>
+
+            <label className="field">
+              <span>Security</span>
+              <select
+                onChange={(event) =>
+                  setAccountForm((current) => ({
+                    ...current,
+                    outgoingSecurity: event.target.value as CreateAccountInput["outgoingSecurity"]
+                  }))
+                }
+                value={accountForm.outgoingSecurity}
+              >
+                <option value="ssl_tls">SSL/TLS</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="plain">Plain</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>SMTP auth</span>
+              <select
+                onChange={(event) =>
+                  setAccountForm((current) => ({
+                    ...current,
+                    outgoingAuthMethod: event.target.value as CreateAccountInput["outgoingAuthMethod"]
+                  }))
+                }
+                value={accountForm.outgoingAuthMethod}
+              >
+                <option value="auto">Automatic</option>
+                <option value="plain">AUTH PLAIN</option>
+                <option value="login">AUTH LOGIN</option>
+                <option value="none">No SMTP auth</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <div className="button-row">
+          <button className="primary-button" disabled={isSavingAccount} type="submit">
+            {isSavingAccount ? "Saving account..." : "Add account"}
+          </button>
+          {compact ? (
+            <button className="secondary-button" onClick={() => setShowAccountSetup(false)} type="button">
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </form>
+    </article>
+  );
+
+  return (
+    <main className="app-shell">
+      {isBooting ? (
+        <div className="boot-overlay" aria-live="polite">
+          <div className="boot-card">
+            <span className="eyebrow">DejAzmach desktop shell</span>
+            <h2>Preparing secure workspace</h2>
+            <p>Loading the restricted Electron shell and local workspace services.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {hasAccounts && showAccountSetup ? (
+        <div className="modal-overlay">
+          {renderAccountForm("Add another mailbox", "Account setup", true)}
+        </div>
+      ) : null}
+
+      {!hasAccounts ? (
+        <section className="welcome-shell">
+          <div className="welcome-backdrop welcome-backdrop-left" aria-hidden="true" />
+          <div className="welcome-backdrop welcome-backdrop-right" aria-hidden="true" />
+
+          <article className="welcome-copy">
+            <span className="eyebrow">DejAzmach</span>
+            <h1>Connect one mailbox, then the full desktop workspace appears.</h1>
+            <p>
+              No demo inbox. No fake folders. DejAzmach stays empty until a real account is configured
+              and verified against the server.
+            </p>
+
+            <div className="welcome-points">
+              <div className="welcome-point">
+                <strong>Server-driven folders</strong>
+                <p>IMAP folders are fetched from the host, so custom mailbox structures show up correctly.</p>
               </div>
-            </header>
+              <div className="welcome-point">
+                <strong>Three-pane workflow</strong>
+                <p>After setup, the interface switches to account rail, message list, and reading pane.</p>
+              </div>
+              <div className="welcome-point">
+                <strong>Main-process secrets</strong>
+                <p>Credentials stay out of the renderer and message HTML remains blocked by default.</p>
+              </div>
+            </div>
 
-            <div className="release-list">
-              {workspace.shellState.releaseTargets.map((target) => (
-                <article className="release-row" key={target.os}>
-                  <div>
-                    <strong>{target.os}</strong>
-                    <p>{target.note}</p>
+            {loadError ? <p className="inline-notice">{loadError}</p> : null}
+            {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
+            {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
+          </article>
+
+          <div className="welcome-form">{renderAccountForm("Configure your first account", "Welcome")}</div>
+        </section>
+      ) : (
+        <>
+          {loadError || actionError || actionNotice ? (
+            <section className="notice-strip">
+              {loadError ? <p className="inline-notice">{loadError}</p> : null}
+              {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
+              {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
+            </section>
+          ) : null}
+
+          <section className="workspace-frame">
+            <aside className="sidebar-pane">
+              <div className="sidebar-brand">
+                <div className="brand-orb">D</div>
+                <div>
+                  <span className="eyebrow eyebrow-inverse">Secure desktop mail</span>
+                  <h1>{workspace.shellState.appName}</h1>
+                </div>
+              </div>
+
+              <button className="compose-button" onClick={() => openComposer()} type="button">
+                New message
+              </button>
+
+              <section className="sidebar-section">
+                <div className="sidebar-section-header">
+                  <span className="eyebrow eyebrow-inverse">Accounts</span>
+                </div>
+
+                <div className="account-stack">
+                  {workspace.accounts.map((account) => (
+                    <button
+                      className={account.id === selectedAccount?.id ? "account-tile account-tile-active" : "account-tile"}
+                      key={account.id}
+                      onClick={() => chooseAccount(account.id)}
+                      type="button"
+                    >
+                      <span className="account-avatar">{getInitials(account.name)}</span>
+                      <span className="account-copy">
+                        <strong>{account.name}</strong>
+                        <span>{account.address}</span>
+                      </span>
+                      <span className="account-count">{account.unreadCount}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="sidebar-section sidebar-section-grow">
+                <div className="sidebar-section-header">
+                  <span className="eyebrow eyebrow-inverse">Folders</span>
+                </div>
+
+                {visibleFolders.length > 0 ? (
+                  <div className="folder-stack">
+                    {visibleFolders.map((folder) => (
+                      <button
+                        className={folder.id === selectedFolder?.id ? "folder-tile folder-tile-active" : "folder-tile"}
+                        key={folder.id}
+                        onClick={() => chooseFolder(folder.id)}
+                        type="button"
+                      >
+                        <span>{folder.name}</span>
+                        <span className="folder-count">{folder.count}</span>
+                      </button>
+                    ))}
                   </div>
-                  <div className="security-side">
-                    <span className={releaseTargetClassMap[target.status]}>{target.status}</span>
-                    <span className="security-value">{target.formats.join(", ")}</span>
+                ) : (
+                  <div className="sidebar-empty">
+                    Verify this account to fetch the real folder tree from the IMAP server.
+                  </div>
+                )}
+              </section>
+
+              <section className="sidebar-footer">
+                <button className="sidebar-action" onClick={() => setActiveSurface("settings")} type="button">
+                  Account settings
+                </button>
+                <button className="sidebar-action sidebar-action-muted" onClick={() => setShowAccountSetup(true)} type="button">
+                  Add account
+                </button>
+              </section>
+            </aside>
+
+            <section className="message-pane">
+              <header className="pane-header">
+                <div>
+                  <span className="eyebrow">Mailbox</span>
+                  <h2>{selectedFolder?.name ?? "Folders"}</h2>
+                </div>
+                <span className={selectedAccount ? accountClassMap[selectedAccount.status] : "status-pill status-pill-idle"}>
+                  {selectedAccount?.status ?? "idle"}
+                </span>
+              </header>
+
+              <label className="search-shell">
+                <span className="search-label">Search</span>
+                <input
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search messages..."
+                  value={searchQuery}
+                />
+              </label>
+
+              <div className="message-pane-meta">
+                <span>{visibleMessages.length} messages</span>
+                {selectedAccount ? <span>{selectedAccount.unreadCount} unread</span> : null}
+              </div>
+
+              <div className="message-list">
+                {visibleMessages.length > 0 ? (
+                  visibleMessages.map((message) => (
+                    <button
+                      className={message.threadId === selectedThread?.id ? "message-row message-row-active" : "message-row"}
+                      key={message.id}
+                      onClick={() => {
+                        setSelectedThreadId(message.threadId);
+                        setActiveSurface("message");
+                      }}
+                      type="button"
+                    >
+                      <span className="message-avatar">{getInitials(message.sender)}</span>
+                      <span className="message-copy">
+                        <span className="message-line">
+                          <strong>{message.sender}</strong>
+                          <span>{message.time}</span>
+                        </span>
+                        <span className="message-subject">
+                          {message.subject}
+                          {message.unread ? <span className="unread-dot" aria-hidden="true" /> : null}
+                        </span>
+                        <span className="message-preview">{message.preview}</span>
+                        <span className="message-meta">
+                          <span className="tag">{message.label}</span>
+                          <span className={trustClassMap[message.trust]}>{message.trust}</span>
+                        </span>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="empty-panel">
+                    <h3>No messages found.</h3>
+                    <p>
+                      {selectedFolder
+                        ? "This folder is empty, or the current search does not match any message."
+                        : "Verify the account to fetch folders from the server."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="reader-pane">
+              {activeSurface === "compose" ? (
+                <article className="reader-card">
+                  <header className="pane-header">
+                    <div>
+                      <span className="eyebrow">Compose</span>
+                      <h2>New message</h2>
+                    </div>
+                    <button className="secondary-button" onClick={() => setActiveSurface("message")} type="button">
+                      Close
+                    </button>
+                  </header>
+
+                  <form className="compose-form" onSubmit={handleDraftSubmit}>
+                    <div className="compose-grid">
+                      <label className="field field-full">
+                        <span>Account</span>
+                        <select
+                          onChange={(event) => setDraftForm((current) => ({ ...current, accountId: event.target.value }))}
+                          required
+                          value={draftForm.accountId}
+                        >
+                          {workspace.accounts.map((account) => (
+                            <option key={account.id} value={account.id}>
+                              {account.name} · {account.address}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="field field-full">
+                        <span>To</span>
+                        <input
+                          onChange={(event) => setDraftForm((current) => ({ ...current, to: event.target.value }))}
+                          placeholder="recipient@example.com"
+                          value={draftForm.to}
+                        />
+                      </label>
+
+                      <label className="field field-full">
+                        <span>Subject</span>
+                        <input
+                          onChange={(event) => setDraftForm((current) => ({ ...current, subject: event.target.value }))}
+                          value={draftForm.subject}
+                        />
+                      </label>
+
+                      <label className="field field-full">
+                        <span>Body</span>
+                        <textarea
+                          onChange={(event) => setDraftForm((current) => ({ ...current, body: event.target.value }))}
+                          rows={16}
+                          value={draftForm.body}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="compose-actions">
+                      <button className="secondary-button" disabled={isSavingDraft} type="submit">
+                        {isSavingDraft ? "Saving..." : "Save draft"}
+                      </button>
+                      <button
+                        className="primary-button"
+                        disabled={isSendingMessage || !draftForm.accountId}
+                        onClick={() => void handleSendMessage()}
+                        type="button"
+                      >
+                        {isSendingMessage ? "Sending..." : "Send"}
+                      </button>
+                    </div>
+                  </form>
+                </article>
+              ) : activeSurface === "settings" ? (
+                <article className="reader-card">
+                  <header className="pane-header">
+                    <div>
+                      <span className="eyebrow">Settings</span>
+                      <h2>{selectedAccount?.name ?? "Account settings"}</h2>
+                    </div>
+                    {selectedAccount ? (
+                      <button
+                        className="primary-button"
+                        disabled={verifyingAccountId === selectedAccount.id}
+                        onClick={() => void handleVerifyAccount(selectedAccount.id)}
+                        type="button"
+                      >
+                        {verifyingAccountId === selectedAccount.id ? "Verifying..." : "Verify & sync"}
+                      </button>
+                    ) : null}
+                  </header>
+
+                  {selectedAccount ? (
+                    <>
+                      <section className="settings-grid">
+                        <div className="settings-card">
+                          <span className="eyebrow">Account</span>
+                          <h3>{selectedAccount.address}</h3>
+                          <p>{selectedAccount.provider}</p>
+                          <div className="settings-badges">
+                            <span className={accountClassMap[selectedAccount.status]}>{selectedAccount.status}</span>
+                            <span className={environmentClassMap[workspace.shellState.environment]}>
+                              {workspace.shellState.environment}
+                            </span>
+                          </div>
+                          <dl className="settings-list">
+                            <div>
+                              <dt>Storage</dt>
+                              <dd>{selectedAccount.storage}</dd>
+                            </div>
+                            <div>
+                              <dt>Last sync</dt>
+                              <dd>{selectedAccount.lastSync}</dd>
+                            </div>
+                            <div>
+                              <dt>Platform</dt>
+                              <dd>{formatPlatform(workspace.shellState.platform)}</dd>
+                            </div>
+                          </dl>
+                        </div>
+
+                        <div className="settings-card">
+                          <span className="eyebrow">Security</span>
+                          <h3>Desktop protection</h3>
+                          <div className="metric-list">
+                            {recentSecurityMetrics.map((metric) => (
+                              <div className="metric-row" key={metric.label}>
+                                <div>
+                                  <strong>{metric.label}</strong>
+                                  <p>{metric.detail}</p>
+                                </div>
+                                <div className="metric-meta">
+                                  <span className={securityClassMap[metric.status]}>{metric.status}</span>
+                                  <span>{metric.value}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="activity-grid">
+                        <div className="settings-card">
+                          <span className="eyebrow">Activity</span>
+                          <h3>Recent events</h3>
+                          <div className="metric-list">
+                            {recentActivity.length > 0 ? (
+                              recentActivity.map((entry) => (
+                                <div className="metric-row" key={entry.id}>
+                                  <div>
+                                    <strong>{entry.title}</strong>
+                                    <p>{entry.detail}</p>
+                                  </div>
+                                  <div className="metric-meta">
+                                    <span className={ledgerClassMap[entry.severity]}>{entry.severity}</span>
+                                    <span>{entry.occurredAt}</span>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="empty-note">No trust-relevant events have been recorded yet.</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="settings-card">
+                          <span className="eyebrow">Sync</span>
+                          <h3>Recent jobs</h3>
+                          <div className="metric-list">
+                            {recentSyncJobs.length > 0 ? (
+                              recentSyncJobs.map((job) => (
+                                <div className="metric-row" key={job.id}>
+                                  <div>
+                                    <strong>{job.title}</strong>
+                                    <p>{job.detail}</p>
+                                  </div>
+                                  <div className="metric-meta">
+                                    <span className={syncClassMap[job.status]}>{job.status}</span>
+                                    <span>{job.time}</span>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="empty-note">No sync jobs have run yet.</div>
+                            )}
+                          </div>
+                        </div>
+                      </section>
+                    </>
+                  ) : (
+                    <div className="empty-panel">
+                      <h3>No account selected.</h3>
+                      <p>Select a mailbox from the left rail.</p>
+                    </div>
+                  )}
+                </article>
+              ) : selectedThread ? (
+                <article className="reader-card">
+                  <header className="reader-header">
+                    <div className="reader-title">
+                      <span className="eyebrow">Conversation</span>
+                      <h2>{selectedThread.subject}</h2>
+                      <p>{selectedThread.participants.join(", ")}</p>
+                    </div>
+
+                    <div className="reader-actions">
+                      {readerMessage ? <span className={trustClassMap[readerMessage.trust]}>{readerMessage.trust}</span> : null}
+                      <button className="secondary-button" onClick={() => openComposer(selectedAccount?.id)} type="button">
+                        Reply
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="thread-stream">
+                    {selectedThread.messages.map((message) => (
+                      <article className="thread-message" key={message.id}>
+                        <div className="thread-topline">
+                          <div className="thread-person">
+                            <span className="message-avatar">{getInitials(message.sender)}</span>
+                            <div>
+                              <strong>{message.sender}</strong>
+                              <p>{message.address}</p>
+                            </div>
+                          </div>
+                          <div className="thread-topline-meta">
+                            <span>{message.sentAt}</span>
+                            <span className={message.verified ? "mini-pill mini-pill-success" : "mini-pill mini-pill-warning"}>
+                              {message.verified ? "verified" : "review"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {message.contentMode === "html-blocked" ? (
+                          <div className="thread-warning">
+                            HTML content was blocked. Only a safe plain-text extraction is shown.
+                          </div>
+                        ) : null}
+
+                        <pre className="thread-body">{message.body}</pre>
+                      </article>
+                    ))}
                   </div>
                 </article>
-              ))}
-            </div>
+              ) : (
+                <article className="reader-card">
+                  <div className="empty-panel empty-panel-reader">
+                    <h3>No conversation selected.</h3>
+                    <p>Select a message from the center column or start a new draft.</p>
+                  </div>
+                </article>
+              )}
+            </section>
           </section>
-
-          <section className="support-section support-section-border">
-            <header className="section-heading compact-heading">
-              <div>
-                <span className="card-label">Shell capabilities</span>
-                <h2>Foundation</h2>
-              </div>
-            </header>
-
-            <ul className="capability-list">
-              {workspace.shellState.capabilities.map((capability) => (
-                <li key={capability}>{capability}</li>
-              ))}
-            </ul>
-          </section>
-        </article>
-      </section>
+        </>
+      )}
     </main>
   );
 }

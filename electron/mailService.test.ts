@@ -25,8 +25,8 @@ test("mail service starts with an empty account workspace and reference folders"
   });
 
   assert.equal(snapshot.accounts.length, 0);
+  assert.equal(snapshot.folders.length, 0);
   assert.equal(snapshot.messages.length, 0);
-  assert.equal(snapshot.folders.some((folder) => folder.id === "folder-drafts"), true);
   assert.equal(snapshot.shellState.securityMetrics.some((metric) => metric.label === "Local persistence"), true);
 
   service.close();
@@ -46,8 +46,11 @@ test("mail service persists added accounts and drafts", () => {
       password: "super-secret",
       incomingServer: "imap.example.com",
       incomingPort: 993,
+      incomingSecurity: "ssl_tls",
       outgoingServer: "smtp.example.com",
-      outgoingPort: 465
+      outgoingPort: 465,
+      outgoingSecurity: "ssl_tls",
+      outgoingAuthMethod: "auto"
     },
     {
       version: "1.0.0",
@@ -76,7 +79,12 @@ test("mail service persists added accounts and drafts", () => {
   );
 
   assert.equal(afterDraft.messages.some((message) => message.subject === "Offline report"), true);
-  assert.equal(afterDraft.folders.some((folder) => folder.id === "folder-drafts" && folder.count > 0), true);
+  assert.equal(
+    afterDraft.folders.some(
+      (folder) => folder.accountId === newAccount.id && folder.kind === "drafts" && folder.count > 0
+    ),
+    true
+  );
 
   service.close();
   fs.rmSync(userDataPath, { recursive: true, force: true });

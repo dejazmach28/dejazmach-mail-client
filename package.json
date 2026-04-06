@@ -62,7 +62,8 @@
       "category": "Network"
     },
     "deb": {
-      "afterInstall": "build/linux/postinst.sh"
+      "afterInstall": "build/linux/postinst.sh",
+      "afterRemove": "build/linux/postrm.sh"
     },
     "win": {
       "target": [
