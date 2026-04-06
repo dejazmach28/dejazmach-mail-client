@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "description": "DejAzmach desktop mail client with a transparent, security-first UI.",
+  "homepage": "https://dejazmach.app",
+  "author": {
+    "name": "DejAzmach",
+    "email": "hello@dejazmach.app"
+  },
+  "license": "UNLICENSED",
   "main": "dist-electron/electron/main.js",
   "type": "module",
   "scripts": {
@@ -15,36 +21,80 @@
     "build:electron": "tsc -p tsconfig.node.json",
     "preview": "vite preview",
     "start": "electron .",
+    "test": "npm run build:electron && node --test dist-electron/electron/*.test.js",
+    "ci": "npm run typecheck && npm run test && npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "dist": "npm run build && electron-builder"
   },
   "build": {
     "appId": "com.dejazmach.mail",
     "productName": "DejAzmach",
+    "asar": true,
+    "compression": "maximum",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
       "package.json"
     ],
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "assets",
+      "output": "release"
     },
     "linux": {
+      "maintainer": "DejAzmach <hello@dejazmach.app>",
       "target": [
-        "AppImage",
-        "deb"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "Network"
     },
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "mac": {
       "target": [
-        "dmg"
-      ]
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     }
   },
   "dependencies": {

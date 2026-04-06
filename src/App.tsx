@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import type {
   AccountStatus,
+  CreateAccountInput,
+  CreateDraftInput,
   LedgerSeverity,
   MailTrust,
+  ReleaseTarget,
+  RuntimeEnvironment,
   SecurityStatus,
   SyncStatus,
   WorkspaceSnapshot
@@ -38,12 +42,49 @@ const ledgerClassMap: Record<LedgerSeverity, string> = {
   critical: "mini-pill mini-pill-critical"
 };
 
+const environmentClassMap: Record<RuntimeEnvironment, string> = {
+  development: "mini-pill mini-pill-warning",
+  production: "mini-pill mini-pill-success"
+};
+
+const releaseTargetClassMap: Record<ReleaseTarget["status"], string> = {
+  configured: "mini-pill mini-pill-success",
+  pending: "mini-pill mini-pill-warning"
+};
+
+const initialAccountForm: CreateAccountInput = {
+  name: "",
+  address: "",
+  provider: "IMAP",
+  username: "",
+  password: "",
+  incomingServer: "",
+  incomingPort: 993,
+  outgoingServer: "",
+  outgoingPort: 465
+};
+
 const browserPreviewWorkspace: WorkspaceSnapshot = {
   shellState: {
     appName: "DejAzmach",
     version: "preview",
     platform: "browser",
+    environment: "development",
+    packaged: false,
     secureDesktopMode: true,
+    releaseTargets: [
+      {
+        os: "linux",
+        formats: ["AppImage", "deb"],
+        status: "configured",
+        note: "Preview data mirrors the intended desktop release matrix."
+      }
+    ],
+    capabilities: [
+      "Renderer preview contract",
+      "Desktop load-state UI",
+      "Security-first shell messaging"
+    ],
     securityMetrics: [
       {
         label: "Renderer isolation",
@@ -81,7 +122,8 @@ const browserPreviewWorkspace: WorkspaceSnapshot = {
     }
   ],
   folders: [
-    { id: "preview-folder", name: "Priority inbox", count: 1, kind: "priority" }
+    { id: "preview-folder", name: "Priority inbox", count: 1, kind: "priority" },
+    { id: "preview-drafts", name: "Shielded drafts", count: 1, kind: "drafts" }
   ],
   messages: [
     {
@@ -111,7 +153,8 @@ const browserPreviewWorkspace: WorkspaceSnapshot = {
           address: "preview@dejazmach.app",
           sentAt: "Now",
           verified: true,
-          body: "Electron preload data replaces this preview when the desktop app is running."
+          body: "Electron preload data replaces this preview when the desktop app is running.",
+          contentMode: "plain"
         }
       ]
     }
@@ -140,21 +183,58 @@ function App() {
   const [selectedFolderId, setSelectedFolderId] = useState(browserPreviewWorkspace.folders[0]?.id ?? "");
   const [selectedThreadId, setSelectedThreadId] = useState(browserPreviewWorkspace.messages[0]?.threadId ?? "");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [isBooting, setIsBooting] = useState(Boolean(window.desktopApi));
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [verifyingAccountId, setVerifyingAccountId] = useState<string | null>(null);
+  const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
+  const [draftForm, setDraftForm] = useState<CreateDraftInput>({
+    accountId: browserPreviewWorkspace.accounts[0]?.id ?? "",
+    to: "",
+    subject: "",
+    body: ""
+  });
+
+  const applyWorkspace = (nextWorkspace: WorkspaceSnapshot) => {
+    setWorkspace(nextWorkspace);
+    setSelectedFolderId((currentFolderId) =>
+      nextWorkspace.folders.some((folder) => folder.id === currentFolderId)
+        ? currentFolderId
+        : (nextWorkspace.folders[0]?.id ?? "")
+    );
+    setSelectedThreadId((currentThreadId) =>
+      nextWorkspace.threads.some((thread) => thread.id === currentThreadId)
+        ? currentThreadId
+        : (nextWorkspace.messages[0]?.threadId ?? nextWorkspace.threads[0]?.id ?? "")
+    );
+    setDraftForm((currentDraft) => ({
+      ...currentDraft,
+      accountId:
+        nextWorkspace.accounts.some((account) => account.id === currentDraft.accountId)
+          ? currentDraft.accountId
+          : (nextWorkspace.accounts[0]?.id ?? "")
+    }));
+  };
 
   useEffect(() => {
     if (!window.desktopApi) {
+      setIsBooting(false);
       return;
     }
 
     void window.desktopApi
       .getWorkspaceSnapshot()
       .then((nextWorkspace) => {
-        setWorkspace(nextWorkspace);
-        setSelectedFolderId(nextWorkspace.folders[0]?.id ?? "");
-        setSelectedThreadId(nextWorkspace.messages[0]?.threadId ?? nextWorkspace.threads[0]?.id ?? "");
+        applyWorkspace(nextWorkspace);
       })
       .catch(() => {
         setLoadError("Desktop data could not be loaded. Showing local preview state instead.");
+      })
+      .finally(() => {
+        setIsBooting(false);
       });
   }, []);
 
@@ -172,8 +252,135 @@ function App() {
   const runningSyncJobs = workspace.syncJobs.filter((job) => job.status === "running").length;
   const transparencyCount = workspace.shellState.transparencyLedger.length;
 
+  const handleAccountSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setActionError(null);
+    setActionNotice(null);
+
+    if (!window.desktopApi) {
+      setActionError("Account onboarding requires the Electron desktop shell.");
+      return;
+    }
+
+    setIsSavingAccount(true);
+
+    try {
+      const nextWorkspace = await window.desktopApi.createAccount(accountForm);
+      applyWorkspace(nextWorkspace);
+      setAccountForm(initialAccountForm);
+      setActionNotice(`Stored ${accountForm.address} in the local account vault.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Account onboarding failed.");
+    } finally {
+      setIsSavingAccount(false);
+    }
+  };
+
+  const handleDraftSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setActionError(null);
+    setActionNotice(null);
+
+    if (!window.desktopApi) {
+      setActionError("Draft persistence requires the Electron desktop shell.");
+      return;
+    }
+
+    setIsSavingDraft(true);
+
+    try {
+      const nextWorkspace = await window.desktopApi.createDraft(draftForm);
+      applyWorkspace(nextWorkspace);
+      setSelectedFolderId("folder-drafts");
+      const latestDraft = nextWorkspace.messages.find((message) => message.folderId === "folder-drafts");
+      if (latestDraft) {
+        setSelectedThreadId(latestDraft.threadId);
+      }
+      setDraftForm((currentDraft) => ({
+        ...currentDraft,
+        to: "",
+        subject: "",
+        body: ""
+      }));
+      setActionNotice("Draft persisted in the local SQLite workspace.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Draft persistence failed.");
+    } finally {
+      setIsSavingDraft(false);
+    }
+  };
+
+  const handleVerifyAccount = async (accountId: string) => {
+    setActionError(null);
+    setActionNotice(null);
+
+    if (!window.desktopApi) {
+      setActionError("Provider verification requires the Electron desktop shell.");
+      return;
+    }
+
+    setVerifyingAccountId(accountId);
+
+    try {
+      const nextWorkspace = await window.desktopApi.verifyAccount(accountId);
+      applyWorkspace(nextWorkspace);
+      setSelectedFolderId("folder-security");
+      setActionNotice("Provider verification completed.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Provider verification failed.");
+    } finally {
+      setVerifyingAccountId(null);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    setActionError(null);
+    setActionNotice(null);
+
+    if (!window.desktopApi) {
+      setActionError("Outbound delivery requires the Electron desktop shell.");
+      return;
+    }
+
+    setIsSendingMessage(true);
+
+    try {
+      const nextWorkspace = await window.desktopApi.sendMessage(draftForm);
+      applyWorkspace(nextWorkspace);
+      setSelectedFolderId("folder-sent");
+      const latestSent = nextWorkspace.messages.find((message) => message.folderId === "folder-sent");
+      if (latestSent) {
+        setSelectedThreadId(latestSent.threadId);
+      }
+      setDraftForm((currentDraft) => ({
+        ...currentDraft,
+        to: "",
+        subject: "",
+        body: ""
+      }));
+      setActionNotice("Message submitted through the provider SMTP transport.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message delivery failed.");
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
   return (
     <main className="app-shell">
+      {isBooting ? (
+        <div className="boot-overlay" aria-live="polite">
+          <div className="boot-card glass-card">
+            <span className="eyebrow">DejAzmach desktop shell</span>
+            <h2>Preparing secure workspace</h2>
+            <p>
+              Loading the renderer inside a restricted Electron boundary. Navigation, remote requests,
+              and unmanaged downloads stay denied while the shell starts.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       <section className="top-banner">
         <article className="glass-card hero-card">
           <div className="hero-copy">
@@ -181,8 +388,8 @@ function App() {
             <h1>Mail that exposes its trust surface.</h1>
             <p>
               A desktop-first foundation for a serious mail client: strong Electron boundaries,
-              visible account and sync state, and a transparency ledger that explains what the app is
-              doing instead of asking the user to assume.
+              visible account and sync state, persisted local workspace data, and a transparency
+              ledger that explains what the app is doing instead of asking the user to assume.
             </p>
           </div>
 
@@ -226,12 +433,25 @@ function App() {
               <strong>{workspace.shellState.version}</strong>
             </div>
             <div>
+              <span className="card-label">Runtime</span>
+              <strong>{workspace.shellState.packaged ? "Packaged build" : "Developer shell"}</strong>
+            </div>
+            <div>
               <span className="card-label">Live sync jobs</span>
               <strong>{runningSyncJobs}</strong>
             </div>
           </div>
 
+          <div className="command-pills">
+            <span className={environmentClassMap[workspace.shellState.environment]}>
+              {workspace.shellState.environment}
+            </span>
+            <span className="mini-pill mini-pill-neutral">{formatPlatform(workspace.shellState.platform)}</span>
+          </div>
+
           {loadError ? <p className="inline-notice">{loadError}</p> : null}
+          {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
+          {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
         </article>
       </section>
 
@@ -257,6 +477,14 @@ function App() {
                   <p className="account-footnote">
                     Last sync {account.lastSync}. Storage: {account.storage}.
                   </p>
+                  <button
+                    className="secondary-button"
+                    disabled={verifyingAccountId === account.id}
+                    onClick={() => void handleVerifyAccount(account.id)}
+                    type="button"
+                  >
+                    {verifyingAccountId === account.id ? "Verifying..." : "Verify & sync"}
+                  </button>
                 </article>
               ))}
             </div>
@@ -283,6 +511,107 @@ function App() {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="form-card">
+            <div className="section-heading">
+              <div>
+                <span className="card-label">Account onboarding</span>
+                <h2>Local vault</h2>
+              </div>
+            </div>
+
+            <form className="stack-form" onSubmit={handleAccountSubmit}>
+              <div className="form-grid">
+                <label className="field">
+                  <span>Name</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))}
+                    required
+                    value={accountForm.name}
+                  />
+                </label>
+                <label className="field">
+                  <span>Address</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, address: event.target.value }))}
+                    required
+                    type="email"
+                    value={accountForm.address}
+                  />
+                </label>
+                <label className="field">
+                  <span>Provider</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, provider: event.target.value }))}
+                    required
+                    value={accountForm.provider}
+                  />
+                </label>
+                <label className="field">
+                  <span>Username</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))}
+                    required
+                    value={accountForm.username}
+                  />
+                </label>
+                <label className="field">
+                  <span>Incoming host</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, incomingServer: event.target.value }))}
+                    required
+                    value={accountForm.incomingServer}
+                  />
+                </label>
+                <label className="field">
+                  <span>Outgoing host</span>
+                  <input
+                    onChange={(event) => setAccountForm((current) => ({ ...current, outgoingServer: event.target.value }))}
+                    required
+                    value={accountForm.outgoingServer}
+                  />
+                </label>
+                <label className="field">
+                  <span>Incoming port</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setAccountForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
+                    }
+                    required
+                    type="number"
+                    value={accountForm.incomingPort}
+                  />
+                </label>
+                <label className="field">
+                  <span>Outgoing port</span>
+                  <input
+                    min={1}
+                    onChange={(event) =>
+                      setAccountForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
+                    }
+                    required
+                    type="number"
+                    value={accountForm.outgoingPort}
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span>Password</span>
+                <input
+                  onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))}
+                  required
+                  type="password"
+                  value={accountForm.password}
+                />
+              </label>
+
+              <button className="primary-button" disabled={isSavingAccount} type="submit">
+                {isSavingAccount ? "Storing account..." : "Store in local vault"}
+              </button>
+            </form>
           </section>
         </aside>
 
@@ -356,6 +685,13 @@ function App() {
                       </span>
                     </div>
                   </div>
+
+                  {message.contentMode === "html-blocked" ? (
+                    <div className="thread-warning">
+                      HTML content was blocked. Only a safe plain-text extraction is shown.
+                    </div>
+                  ) : null}
+
                   <pre className="thread-body">{message.body}</pre>
                 </article>
               )) ?? null}
@@ -390,25 +726,65 @@ function App() {
             <article className="glass-card sync-card">
               <header className="section-heading">
                 <div>
-                  <span className="card-label">Sync</span>
-                  <h2>Queue state</h2>
+                  <span className="card-label">Compose</span>
+                  <h2>Drafts</h2>
                 </div>
               </header>
 
-              <div className="sync-list">
-                {workspace.syncJobs.map((job) => (
-                  <div className="sync-row" key={job.id}>
-                    <div>
-                      <strong>{job.title}</strong>
-                      <p>{job.detail}</p>
-                    </div>
-                    <div className="security-side">
-                      <span className={syncClassMap[job.status]}>{job.status}</span>
-                      <span className="security-value">{job.time}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <form className="stack-form" onSubmit={handleDraftSubmit}>
+                <label className="field">
+                  <span>Account</span>
+                  <select
+                    onChange={(event) => setDraftForm((current) => ({ ...current, accountId: event.target.value }))}
+                    required
+                    value={draftForm.accountId}
+                  >
+                    {workspace.accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name} · {account.address}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>To</span>
+                  <input
+                    onChange={(event) => setDraftForm((current) => ({ ...current, to: event.target.value }))}
+                    placeholder="recipient@example.com"
+                    value={draftForm.to}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Subject</span>
+                  <input
+                    onChange={(event) => setDraftForm((current) => ({ ...current, subject: event.target.value }))}
+                    value={draftForm.subject}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Body</span>
+                  <textarea
+                    onChange={(event) => setDraftForm((current) => ({ ...current, body: event.target.value }))}
+                    rows={7}
+                    value={draftForm.body}
+                  />
+                </label>
+
+                <button className="primary-button" disabled={isSavingDraft} type="submit">
+                  {isSavingDraft ? "Saving draft..." : "Persist draft locally"}
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={isSendingMessage}
+                  onClick={() => void handleSendMessage()}
+                  type="button"
+                >
+                  {isSendingMessage ? "Sending..." : "Send now"}
+                </button>
+              </form>
             </article>
           </div>
 
@@ -434,6 +810,71 @@ function App() {
                     </div>
                   </div>
                 </article>
+              ))}
+            </div>
+          </article>
+
+          <div className="detail-grid">
+            <article className="glass-card release-card">
+              <header className="section-heading">
+                <div>
+                  <span className="card-label">Release targets</span>
+                  <h2>Cross-platform build</h2>
+                </div>
+              </header>
+
+              <div className="release-list">
+                {workspace.shellState.releaseTargets.map((target) => (
+                  <article className="release-row" key={target.os}>
+                    <div>
+                      <strong>{target.os}</strong>
+                      <p>{target.note}</p>
+                    </div>
+                    <div className="security-side">
+                      <span className={releaseTargetClassMap[target.status]}>{target.status}</span>
+                      <span className="security-value">{target.formats.join(", ")}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </article>
+
+            <article className="glass-card release-card">
+              <header className="section-heading">
+                <div>
+                  <span className="card-label">Shell capabilities</span>
+                  <h2>Production foundation</h2>
+                </div>
+              </header>
+
+              <ul className="capability-list">
+                {workspace.shellState.capabilities.map((capability) => (
+                  <li key={capability}>{capability}</li>
+                ))}
+              </ul>
+            </article>
+          </div>
+
+          <article className="glass-card sync-card">
+            <header className="section-heading">
+              <div>
+                <span className="card-label">Sync</span>
+                <h2>Queue state</h2>
+              </div>
+            </header>
+
+            <div className="sync-list">
+              {workspace.syncJobs.map((job) => (
+                <div className="sync-row" key={job.id}>
+                  <div>
+                    <strong>{job.title}</strong>
+                    <p>{job.detail}</p>
+                  </div>
+                  <div className="security-side">
+                    <span className={syncClassMap[job.status]}>{job.status}</span>
+                    <span className="security-value">{job.time}</span>
+                  </div>
+                </div>
               ))}
             </div>
           </article>

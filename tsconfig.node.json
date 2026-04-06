@@ -16,5 +16,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["electron/**/*.ts", "shared/**/*.ts", "vite.config.ts"]
+  "include": ["electron/**/*.ts", "electron/**/*.test.ts", "shared/**/*.ts", "vite.config.ts"]
 }

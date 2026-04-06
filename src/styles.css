@@ -45,6 +45,34 @@ button {
   font: inherit;
 }
 
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 1px solid rgba(134, 206, 185, 0.35);
+  border-color: rgba(134, 206, 185, 0.35);
+}
+
 strong,
 h1,
 h2,
@@ -53,8 +81,37 @@ h3 {
 }
 
 .app-shell {
+  position: relative;
   min-height: 100vh;
   padding: 24px;
+}
+
+.boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(7, 10, 11, 0.55);
+  backdrop-filter: blur(14px);
+}
+
+.boot-card {
+  width: min(560px, 100%);
+  padding: 28px;
+  border-radius: 28px;
+}
+
+.boot-card h2 {
+  margin: 12px 0 10px;
+  font: 600 2rem/1 "Iowan Old Style", "Palatino Linotype", serif;
+}
+
+.boot-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .top-banner {
@@ -172,6 +229,12 @@ h3 {
   gap: 16px;
 }
 
+.command-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .command-list strong {
   display: block;
   margin-top: 6px;
@@ -195,6 +258,13 @@ h3 {
   flex-direction: column;
   justify-content: space-between;
   gap: 24px;
+}
+
+.form-card {
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .eyebrow,
@@ -226,9 +296,68 @@ h3 {
 .thread-stream,
 .security-list,
 .sync-list,
-.ledger-list {
+.ledger-list,
+.release-list {
   display: grid;
   gap: 14px;
+}
+
+.stack-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field span {
+  font-size: 0.82rem;
+  color: #d8c7af;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.primary-button {
+  border: 1px solid rgba(134, 206, 185, 0.32);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(134, 206, 185, 0.18), rgba(201, 133, 72, 0.16));
+  color: var(--text);
+  padding: 13px 16px;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.primary-button:hover {
+  background: linear-gradient(135deg, rgba(134, 206, 185, 0.24), rgba(201, 133, 72, 0.2));
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.secondary-button {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 13px 16px;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.secondary-button:hover {
+  border-color: rgba(201, 133, 72, 0.32);
+  background: rgba(201, 133, 72, 0.1);
 }
 
 .account-card {
@@ -418,6 +547,15 @@ h3 {
   color: #f4ecdc;
 }
 
+.thread-warning {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(241, 192, 125, 0.12);
+  color: #f1c07d;
+  line-height: 1.5;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -426,8 +564,18 @@ h3 {
 
 .security-row,
 .sync-row,
-.ledger-topline {
+.ledger-topline,
+.release-row {
   padding: 4px 0;
+}
+
+.release-card {
+  min-height: 100%;
+}
+
+.capability-list {
+  color: var(--muted);
+  line-height: 1.8;
 }
 
 .security-value {
@@ -442,6 +590,16 @@ h3 {
   background: rgba(241, 192, 125, 0.12);
   color: #f1c07d;
   line-height: 1.5;
+}
+
+.inline-notice-critical {
+  background: rgba(230, 130, 112, 0.16);
+  color: #e68270;
+}
+
+.inline-notice-success {
+  background: rgba(134, 206, 185, 0.14);
+  color: #9de1cd;
 }
 
 .status-pill,
@@ -485,7 +643,8 @@ h3 {
   .top-banner,
   .desktop-grid,
   .detail-grid,
-  .hero-card {
+  .hero-card,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

@@ -8,6 +8,17 @@ export type SyncStatus = "running" | "queued" | "complete";
 
 export type LedgerSeverity = "info" | "notice" | "critical";
 
+export type RuntimeEnvironment = "development" | "production";
+
+export type MessageContentMode = "plain" | "html-blocked";
+
+export type ReleaseTarget = {
+  os: "linux" | "windows" | "macos";
+  formats: string[];
+  status: "configured" | "pending";
+  note: string;
+};
+
 export type SecurityMetric = {
   label: string;
   value: string;
@@ -27,7 +38,11 @@ export type ShellState = {
   appName: string;
   version: string;
   platform: string;
+  environment: RuntimeEnvironment;
+  packaged: boolean;
   secureDesktopMode: boolean;
+  releaseTargets: ReleaseTarget[];
+  capabilities: string[];
   securityMetrics: SecurityMetric[];
   transparencyLedger: LedgerEntry[];
 };
@@ -71,6 +86,7 @@ export type ThreadMessage = {
   sentAt: string;
   body: string;
   verified: boolean;
+  contentMode: MessageContentMode;
 };
 
 export type ThreadDetail = {
@@ -98,6 +114,29 @@ export type WorkspaceSnapshot = {
   syncJobs: SyncJob[];
 };
 
+export type CreateAccountInput = {
+  name: string;
+  address: string;
+  provider: string;
+  username: string;
+  password: string;
+  incomingServer: string;
+  incomingPort: number;
+  outgoingServer: string;
+  outgoingPort: number;
+};
+
+export type CreateDraftInput = {
+  accountId: string;
+  to: string;
+  subject: string;
+  body: string;
+};
+
 export type DesktopApi = {
   getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
+  createAccount: (input: CreateAccountInput) => Promise<WorkspaceSnapshot>;
+  createDraft: (input: CreateDraftInput) => Promise<WorkspaceSnapshot>;
+  verifyAccount: (accountId: string) => Promise<WorkspaceSnapshot>;
+  sendMessage: (input: CreateDraftInput) => Promise<WorkspaceSnapshot>;
 };
