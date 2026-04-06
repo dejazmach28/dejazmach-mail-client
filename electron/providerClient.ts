@@ -38,7 +38,7 @@ export type VerificationSummary = {
     unseen?: number;
     folders: Array<{
       name: string;
-      kind: "inbox" | "drafts" | "sent" | "archive" | "custom";
+      kind: "inbox" | "drafts" | "sent" | "archive" | "trash" | "custom";
     }>;
     headers: InboxHeader[];
   };
@@ -815,6 +815,10 @@ const classifyImapFolder = (name: string, attributes: string[]) => {
 
   if (attributes.includes("archive") || normalizedName.includes("archive")) {
     return "archive" as const;
+  }
+
+  if (attributes.includes("trash") || normalizedName.includes("trash") || normalizedName.includes("bin")) {
+    return "trash" as const;
   }
 
   return "custom" as const;

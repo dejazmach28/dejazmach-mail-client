@@ -67,7 +67,7 @@ export type FolderSummary = {
   accountId?: string | null;
   name: string;
   count: number;
-  kind: "inbox" | "priority" | "drafts" | "sent" | "archive" | "security" | "custom";
+  kind: "inbox" | "priority" | "drafts" | "sent" | "archive" | "security" | "trash" | "custom";
 };
 
 export type MailSummary = {

@@ -118,6 +118,8 @@ const folderSortOrder = (kind: string, name: string) => {
       return 40;
     case "archive":
       return 50;
+    case "trash":
+      return 55;
     case "security":
       return 60;
     default:
@@ -320,7 +322,92 @@ export class MailService {
     }
   }
 
-  private ensureReferenceData() {}
+  private ensureReferenceData() {
+    try {
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS accounts (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          address TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          status TEXT NOT NULL,
+          last_sync TEXT NOT NULL,
+          unread_count INTEGER NOT NULL DEFAULT 0,
+          storage TEXT NOT NULL,
+          username TEXT NOT NULL,
+          incoming_server TEXT NOT NULL,
+          incoming_port INTEGER NOT NULL,
+          incoming_security TEXT NOT NULL DEFAULT 'ssl_tls',
+          outgoing_server TEXT NOT NULL,
+          outgoing_port INTEGER NOT NULL,
+          outgoing_security TEXT NOT NULL DEFAULT 'ssl_tls',
+          outgoing_auth_method TEXT NOT NULL DEFAULT 'auto',
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS folders (
+          id TEXT PRIMARY KEY,
+          account_id TEXT,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'remote',
+          sort_order INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          folder_id TEXT NOT NULL,
+          sender TEXT NOT NULL,
+          address TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          preview TEXT NOT NULL,
+          label TEXT NOT NULL,
+          time TEXT NOT NULL,
+          unread INTEGER NOT NULL,
+          trust TEXT NOT NULL,
+          sent_at TEXT NOT NULL,
+          body TEXT NOT NULL,
+          verified INTEGER NOT NULL,
+          content_mode TEXT NOT NULL DEFAULT 'plain',
+          remote_message_ref TEXT,
+          remote_uid INTEGER,
+          remote_sequence INTEGER,
+          remote_folder_name TEXT,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS drafts (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          to_address TEXT NOT NULL DEFAULT '',
+          subject TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS events (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          detail TEXT NOT NULL DEFAULT '',
+          severity TEXT NOT NULL DEFAULT 'info',
+          created_at TEXT NOT NULL
+        );
+      `);
+
+      const accountRows = this.database.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>;
+      for (const account of accountRows) {
+        this.ensureFolder(account.id, "Inbox", "inbox", "local");
+        this.ensureFolder(account.id, "Sent", "sent", "local");
+        this.ensureFolder(account.id, "Drafts", "drafts", "local");
+        this.ensureFolder(account.id, "Trash", "trash", "local");
+      }
+    } catch (error) {
+      console.error("Failed to ensure DejAzmach reference data.", error);
+    }
+  }
 
   private purgeLegacySeedDataIfPresent() {
     const legacyAccountIds = new Set(["acc-ops", "acc-leadership", "acc-audit"]);
