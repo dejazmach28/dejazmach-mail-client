@@ -55,6 +55,11 @@ type MessageRow = {
   created_at: string;
 };
 
+type ReplyMetadata = {
+  inReplyTo?: string;
+  references: string[];
+};
+
 const nowIso = () => new Date().toISOString();
 
 const displayTime = () =>
@@ -584,6 +589,35 @@ export class MailService {
       .run(makeId("sync"), title, detail, status, status === "complete" ? displayTime() : "Now", nowIso());
   }
 
+  private getReplyMetadata(messageId?: string): ReplyMetadata {
+    if (!messageId) {
+      return {
+        references: []
+      };
+    }
+
+    const message = this.database
+      .prepare(
+        `
+          SELECT remote_message_ref AS remoteMessageRef
+          FROM messages
+          WHERE id = ?
+          LIMIT 1
+        `
+      )
+      .get(messageId) as { remoteMessageRef?: string | null } | undefined;
+
+    const inReplyTo =
+      message?.remoteMessageRef && !message.remoteMessageRef.startsWith("seq:")
+        ? message.remoteMessageRef
+        : undefined;
+
+    return {
+      inReplyTo,
+      references: inReplyTo ? [inReplyTo] : []
+    };
+  }
+
   private ensureFolder(accountId: string, name: string, kind: WorkspaceSnapshot["folders"][number]["kind"], source: "remote" | "local") {
     const existing = this.database
       .prepare(
@@ -999,6 +1033,7 @@ export class MailService {
     const account = this.getAccountPassword(input.accountId);
     const subject = input.subject.trim() || "No subject";
     const body = input.body.trim();
+    const replyMetadata = this.getReplyMetadata(input.replyToMessageId);
 
     if (!input.to.trim()) {
       throw new Error("Recipient address is required before sending.");
@@ -1018,7 +1053,9 @@ export class MailService {
         outgoingAuthMethod: account.outgoingAuthMethod,
         to: input.to.trim(),
         subject,
-        body
+        body,
+        inReplyTo: replyMetadata.inReplyTo,
+        references: replyMetadata.references
       });
 
       const createdAt = nowIso();

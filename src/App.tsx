@@ -113,6 +113,23 @@ const unwrapResult = (result: ActionResult<WorkspaceSnapshot>) => {
   return result.data;
 };
 
+const withSubjectPrefix = (subject: string, prefix: "Re" | "Fwd") => {
+  const trimmedSubject = subject.trim() || "No subject";
+  const prefixPattern = new RegExp(`^${prefix}:\\s*`, "i");
+  return prefixPattern.test(trimmedSubject) ? trimmedSubject : `${prefix}: ${trimmedSubject}`;
+};
+
+const quoteBody = (body: string) =>
+  body
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+const buildQuotedReplyBody = (sentAt: string, sender: string, body: string) =>
+  `\n\n> On ${sentAt}, ${sender} wrote:\n${quoteBody(body)}`;
+
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
   const [selectedAccountId, setSelectedAccountId] = useState("");
@@ -205,6 +222,7 @@ function App() {
     workspace.threads.find((thread) => thread.id === selectedThreadId) ??
     workspace.threads.find((thread) => thread.id === visibleMessages[0]?.threadId);
   const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
+  const activeThreadMessage = selectedThread?.messages[0];
   const recentActivity = workspace.shellState.transparencyLedger.slice(0, 4);
   const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
   const recentSyncJobs = workspace.syncJobs.slice(0, 3);
@@ -228,7 +246,8 @@ function App() {
       ...currentDraft,
       to: "",
       subject: "",
-      body: ""
+      body: "",
+      replyToMessageId: undefined
     }));
   };
 
@@ -557,8 +576,34 @@ function App() {
               ) : (
                 <MessageReader
                   loadingMessageBodyId={loadingMessageBodyId}
-                  onForward={() => openComposer(selectedAccount?.id)}
-                  onReply={() => openComposer(selectedAccount?.id)}
+                  onForward={() =>
+                    openComposer(selectedAccount?.id, {
+                      to: "",
+                      subject: withSubjectPrefix(selectedThread?.subject ?? "", "Fwd"),
+                      body: activeThreadMessage
+                        ? buildQuotedReplyBody(
+                            activeThreadMessage.sentAt,
+                            activeThreadMessage.sender,
+                            activeThreadMessage.body
+                          )
+                        : "",
+                      replyToMessageId: undefined
+                    })
+                  }
+                  onReply={() =>
+                    openComposer(selectedAccount?.id, {
+                      to: activeThreadMessage?.address ?? "",
+                      subject: withSubjectPrefix(selectedThread?.subject ?? "", "Re"),
+                      body: activeThreadMessage
+                        ? buildQuotedReplyBody(
+                            activeThreadMessage.sentAt,
+                            activeThreadMessage.sender,
+                            activeThreadMessage.body
+                          )
+                        : "",
+                      replyToMessageId: activeThreadMessage?.id
+                    })
+                  }
                   readerMessage={readerMessage}
                   thread={selectedThread}
                 />
