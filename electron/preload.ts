@@ -6,7 +6,8 @@ const desktopApi = {
   createAccount: (input) => ipcRenderer.invoke("app:create-account", input),
   createDraft: (input) => ipcRenderer.invoke("app:create-draft", input),
   verifyAccount: (accountId) => ipcRenderer.invoke("app:verify-account", accountId),
-  sendMessage: (input) => ipcRenderer.invoke("app:send-message", input)
+  sendMessage: (input) => ipcRenderer.invoke("app:send-message", input),
+  fetchMessageBody: (input) => ipcRenderer.invoke("app:fetch-message-body", input)
 } satisfies DesktopApi;
 
 contextBridge.exposeInMainWorld("desktopApi", Object.freeze(desktopApi));

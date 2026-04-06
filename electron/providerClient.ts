@@ -18,6 +18,18 @@ type AccountConnectionInput = {
   outgoingAuthMethod: SmtpAuthMethod;
 };
 
+export type InboxHeader = {
+  sequence: number;
+  remoteMessageRef: string;
+  subject: string;
+  fromName: string;
+  fromAddress: string;
+  date: string;
+  flags: string[];
+  unread: boolean;
+  size: number;
+};
+
 export type VerificationSummary = {
   imap: {
     greeting: string;
@@ -27,6 +39,7 @@ export type VerificationSummary = {
       name: string;
       kind: "inbox" | "drafts" | "sent" | "archive" | "custom";
     }>;
+    headers: InboxHeader[];
   };
   smtp: {
     secured: boolean;
@@ -48,10 +61,22 @@ export type SendMessageInput = {
   body: string;
 };
 
+export type FetchMessageBodyInput = {
+  username: string;
+  password: string;
+  incomingServer: string;
+  incomingPort: number;
+  incomingSecurity: TransportSecurity;
+  folderName: string;
+  sequence: number;
+};
+
 type Reply = {
   code: number;
   lines: string[];
 };
+
+type ImapNode = string | null | ImapNode[];
 
 const TIMEOUT_MS = 15000;
 
@@ -159,6 +184,159 @@ export const parseImapListLine = (line: string) => {
   };
 };
 
+const skipWhitespace = (value: string, index: number) => {
+  let cursor = index;
+  while (cursor < value.length && /\s/.test(value[cursor] ?? "")) {
+    cursor += 1;
+  }
+  return cursor;
+};
+
+const parseQuotedString = (value: string, start: number) => {
+  let cursor = start + 1;
+  let result = "";
+
+  while (cursor < value.length) {
+    const character = value[cursor] ?? "";
+    if (character === "\\") {
+      result += value[cursor + 1] ?? "";
+      cursor += 2;
+      continue;
+    }
+
+    if (character === '"') {
+      return { node: result, nextIndex: cursor + 1 };
+    }
+
+    result += character;
+    cursor += 1;
+  }
+
+  throw new Error(`Unterminated IMAP quoted string: ${value}`);
+};
+
+const parseAtom = (value: string, start: number) => {
+  let cursor = start;
+  while (cursor < value.length && !/[\s()]/.test(value[cursor] ?? "")) {
+    cursor += 1;
+  }
+
+  const atom = value.slice(start, cursor);
+  return {
+    node: atom.toUpperCase() === "NIL" ? null : atom,
+    nextIndex: cursor
+  };
+};
+
+const parseImapNode = (value: string, start = 0): { node: ImapNode; nextIndex: number } => {
+  const cursor = skipWhitespace(value, start);
+  const character = value[cursor];
+
+  if (!character) {
+    throw new Error(`Unexpected end of IMAP value: ${value}`);
+  }
+
+  if (character === "(") {
+    const nodes: ImapNode[] = [];
+    let nextIndex = cursor + 1;
+
+    while (true) {
+      nextIndex = skipWhitespace(value, nextIndex);
+      if ((value[nextIndex] ?? "") === ")") {
+        return { node: nodes, nextIndex: nextIndex + 1 };
+      }
+
+      const parsed = parseImapNode(value, nextIndex);
+      nodes.push(parsed.node);
+      nextIndex = parsed.nextIndex;
+    }
+  }
+
+  if (character === '"') {
+    return parseQuotedString(value, cursor);
+  }
+
+  return parseAtom(value, cursor);
+};
+
+const asImapList = (value: ImapNode) => (Array.isArray(value) ? value : []);
+
+const asImapString = (value: ImapNode) => (typeof value === "string" ? value : "");
+
+const parseEnvelopeAddressList = (value: ImapNode) =>
+  asImapList(value)
+    .map((entry) => asImapList(entry))
+    .map((entry) => ({
+      name: entry[0] === null ? "" : asImapString(entry[0]),
+      mailbox: asImapString(entry[2]),
+      host: asImapString(entry[3])
+    }))
+    .filter((entry) => entry.mailbox && entry.host)
+    .map((entry) => ({
+      name: entry.name,
+      address: `${entry.mailbox}@${entry.host}`
+    }));
+
+export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
+  const match = /^\* (\d+) FETCH \((.*)\)$/.exec(line.trim());
+  if (!match) {
+    return null;
+  }
+
+  const sequence = Number(match[1]);
+  const parsed = parseImapNode(`(${match[2]})`);
+  const tokens = asImapList(parsed.node);
+
+  let size = 0;
+  let flags: string[] = [];
+  let envelope: ImapNode[] = [];
+
+  for (let index = 0; index < tokens.length; index += 2) {
+    const key = asImapString(tokens[index]).toUpperCase();
+    const tokenValue = tokens[index + 1];
+
+    if (key === "RFC822.SIZE") {
+      size = Number(asImapString(tokenValue)) || 0;
+    }
+
+    if (key === "FLAGS") {
+      flags = asImapList(tokenValue).map((flag) => asImapString(flag));
+    }
+
+    if (key === "ENVELOPE") {
+      envelope = asImapList(tokenValue);
+    }
+  }
+
+  const fromEntries = parseEnvelopeAddressList(envelope[2]);
+  const fromEntry = fromEntries[0] ?? { name: "", address: "" };
+  const subject = asImapString(envelope[1]) || "No subject";
+  const date = asImapString(envelope[0]);
+  const messageId = asImapString(envelope[9]);
+
+  return {
+    sequence,
+    remoteMessageRef: messageId || `seq:${sequence}`,
+    subject,
+    fromName: fromEntry.name,
+    fromAddress: fromEntry.address,
+    date,
+    flags,
+    unread: !flags.some((flag) => flag.toLowerCase() === "\\seen"),
+    size
+  };
+};
+
+const parseImapExists = (lines: string[]) => {
+  const existsLine = lines.find((line) => /^\* \d+ EXISTS$/.test(line.trim()));
+  if (!existsLine) {
+    return 0;
+  }
+
+  const match = /^\* (\d+) EXISTS$/.exec(existsLine.trim());
+  return match ? Number(match[1]) : 0;
+};
+
 export const parseSmtpCapabilities = (reply: Reply) =>
   reply.lines
     .slice(1)
@@ -196,13 +374,11 @@ export const buildPlainTextMessage = ({
 class LineSocket {
   private socket: SocketLike;
 
-  private buffer = "";
-
-  private lineQueue: string[] = [];
-
-  private lineResolvers: Array<(line: string) => void> = [];
+  private buffer = Buffer.alloc(0);
 
   private terminalError: Error | null = null;
+
+  private waiters: Array<() => void> = [];
 
   constructor(socket: SocketLike) {
     this.socket = socket;
@@ -210,7 +386,6 @@ class LineSocket {
   }
 
   private attach(socket: SocketLike) {
-    socket.setEncoding("utf8");
     socket.on("data", this.handleData);
     socket.once("error", this.handleTerminal);
     socket.once("close", () => this.handleTerminal(new Error("Socket closed before protocol completed.")));
@@ -222,54 +397,65 @@ class LineSocket {
   }
 
   private handleTerminal = (error: Error) => {
-    this.terminalError = error;
-    while (this.lineResolvers.length > 0) {
-      const resolver = this.lineResolvers.shift();
-      if (resolver) {
-        resolver("");
-      }
+    if (this.terminalError) {
+      return;
     }
+
+    this.terminalError = error;
+    this.flushWaiters();
   };
+
+  private flushWaiters() {
+    const pending = this.waiters.splice(0);
+    for (const waiter of pending) {
+      waiter();
+    }
+  }
 
   private handleData = (chunk: string | Buffer) => {
-    this.buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-
-    while (this.buffer.includes("\n")) {
-      const newlineIndex = this.buffer.indexOf("\n");
-      const rawLine = this.buffer.slice(0, newlineIndex);
-      this.buffer = this.buffer.slice(newlineIndex + 1);
-      const line = rawLine.replace(/\r$/, "");
-
-      const resolver = this.lineResolvers.shift();
-      if (resolver) {
-        resolver(line);
-      } else {
-        this.lineQueue.push(line);
-      }
-    }
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    this.buffer = Buffer.concat([this.buffer, data]);
+    this.flushWaiters();
   };
 
-  async readLine() {
-    if (this.lineQueue.length > 0) {
-      return this.lineQueue.shift() ?? "";
-    }
-
+  private async waitForBufferedData(label: string) {
     if (this.terminalError) {
       throw this.terminalError;
     }
 
-    return withTimeout(
-      new Promise<string>((resolve) => {
-        this.lineResolvers.push(resolve);
-      }).then((line) => {
-        if (!line && this.terminalError) {
-          throw this.terminalError;
-        }
-
-        return line;
+    await withTimeout(
+      new Promise<void>((resolve) => {
+        this.waiters.push(resolve);
       }),
-      "Protocol read"
+      label
     );
+
+    if (this.terminalError && this.buffer.length === 0) {
+      throw this.terminalError;
+    }
+  };
+
+  async readLine() {
+    while (true) {
+      const newlineIndex = this.buffer.indexOf(0x0a);
+      if (newlineIndex !== -1) {
+        const rawLine = this.buffer.subarray(0, newlineIndex);
+        this.buffer = this.buffer.subarray(newlineIndex + 1);
+        return rawLine.toString("utf8").replace(/\r$/, "");
+      }
+
+      await this.waitForBufferedData("Protocol read");
+    }
+  }
+
+  async readBytes(length: number) {
+    while (this.buffer.length < length) {
+      await this.waitForBufferedData("Protocol literal read");
+    }
+
+    const chunk = this.buffer.subarray(0, length);
+    this.buffer = this.buffer.subarray(length);
+    return chunk;
   }
 
   async readReply() {
@@ -370,6 +556,35 @@ const runImapCommand = async (socket: LineSocket, tag: string, command: string) 
   return lines;
 };
 
+const runImapLiteralCommand = async (socket: LineSocket, tag: string, command: string) => {
+  socket.write(`${tag} ${command}\r\n`);
+  const lines: string[] = [];
+  const literals: string[] = [];
+
+  while (true) {
+    const line = await socket.readLine();
+    lines.push(line);
+
+    const literalMatch = /\{(\d+)\}$/.exec(line);
+    if (literalMatch) {
+      const literalLength = Number(literalMatch[1]);
+      const literal = await socket.readBytes(literalLength);
+      literals.push(literal.toString("utf8"));
+    }
+
+    if (line.startsWith(`${tag} `)) {
+      break;
+    }
+  }
+
+  const finalLine = lines[lines.length - 1] ?? "";
+  if (!new RegExp(`^${tag} OK\\b`).test(finalLine)) {
+    throw new Error(`IMAP command failed: ${finalLine}`);
+  }
+
+  return { lines, literals };
+};
+
 const classifyImapFolder = (name: string, attributes: string[]) => {
   const normalizedName = name.toLowerCase();
 
@@ -458,7 +673,18 @@ const connectImap = async (input: AccountConnectionInput) => {
     );
     const statusLines = await runImapCommand(socket, "A0002", "STATUS INBOX (MESSAGES UNSEEN)");
     const folderLines = await runImapCommand(socket, "A0003", 'LIST "" "*"');
-    await runImapCommand(socket, "A0004", "LOGOUT");
+    const selectLines = await runImapCommand(socket, "A0004", "SELECT INBOX");
+    const exists = parseImapExists(selectLines);
+    const headerStart = exists > 50 ? exists - 49 : 1;
+    const headerLines =
+      exists > 0
+        ? await runImapCommand(
+            socket,
+            "A0005",
+            `FETCH ${headerStart}:${exists} (RFC822.SIZE FLAGS ENVELOPE)`
+          )
+        : [];
+    await runImapCommand(socket, "A0006", "LOGOUT");
 
     const statusLine = statusLines.find((line) => line.startsWith("* STATUS"));
     const parsedStatus = statusLine ? parseImapStatusLine(statusLine) : {};
@@ -470,13 +696,19 @@ const connectImap = async (input: AccountConnectionInput) => {
         name: folder.name,
         kind: classifyImapFolder(folder.name, folder.attributes)
       }));
+    const headers = headerLines
+      .filter((line) => line.startsWith("* ") && line.includes(" FETCH "))
+      .map((line) => parseImapFetchEnvelope(line))
+      .filter((header): header is InboxHeader => Boolean(header))
+      .sort((left, right) => right.sequence - left.sequence);
 
     return {
       greeting,
       loginLines,
       messages: parsedStatus.MESSAGES,
       unseen: parsedStatus.UNSEEN,
-      folders
+      folders,
+      headers
     };
   } finally {
     socket.close();
@@ -559,10 +791,46 @@ export const verifyAccountConnection = async (input: AccountConnectionInput): Pr
       greeting: imap.greeting,
       messages: imap.messages,
       unseen: imap.unseen,
-      folders: imap.folders
+      folders: imap.folders,
+      headers: imap.headers
     },
     smtp
   };
+};
+
+export const fetchImapMessageBody = async (input: FetchMessageBodyInput) => {
+  const baseSocket =
+    input.incomingSecurity === "ssl_tls"
+      ? await createSecureSocket(input.incomingServer, input.incomingPort)
+      : await createPlainSocket(input.incomingServer, input.incomingPort);
+  const socket = new LineSocket(baseSocket);
+
+  try {
+    await socket.readLine();
+
+    if (input.incomingSecurity === "starttls") {
+      await runImapCommand(socket, "B0000", "STARTTLS");
+      await socket.upgradeToTls(input.incomingServer);
+    }
+
+    await runImapCommand(
+      socket,
+      "B0001",
+      `LOGIN ${escapeImapString(input.username)} ${escapeImapString(input.password)}`
+    );
+    await runImapCommand(socket, "B0002", `SELECT ${escapeImapString(input.folderName)}`);
+    const bodyResult = await runImapLiteralCommand(socket, "B0003", `FETCH ${input.sequence} RFC822`);
+    await runImapCommand(socket, "B0004", "LOGOUT");
+
+    const body = bodyResult.literals[0] ?? "";
+    if (!body) {
+      throw new Error(`The IMAP server returned no body data for sequence ${input.sequence}.`);
+    }
+
+    return body;
+  } finally {
+    socket.close();
+  }
 };
 
 export const sendPlainTextMessage = async (input: SendMessageInput) => {

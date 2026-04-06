@@ -10,7 +10,7 @@ export type LedgerSeverity = "info" | "notice" | "critical";
 
 export type RuntimeEnvironment = "development" | "production";
 
-export type MessageContentMode = "plain" | "html-blocked";
+export type MessageContentMode = "plain" | "html-blocked" | "remote-pending";
 
 export type TransportSecurity = "ssl_tls" | "starttls" | "plain";
 
@@ -141,6 +141,11 @@ export type CreateDraftInput = {
   body: string;
 };
 
+export type FetchMessageBodyInput = {
+  accountId: string;
+  messageId: string;
+};
+
 export type ActionResult<T> =
   | {
       ok: true;
@@ -158,4 +163,5 @@ export type DesktopApi = {
   createDraft: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   verifyAccount: (accountId: string) => Promise<ActionResult<WorkspaceSnapshot>>;
   sendMessage: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  fetchMessageBody: (input: FetchMessageBodyInput) => Promise<ActionResult<WorkspaceSnapshot>>;
 };

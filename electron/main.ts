@@ -340,6 +340,21 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:fetch-message-body", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().fetchMessageBody(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
   if (process.platform === "win32") {
     app.setAppUserModelId("com.dejazmach.mail");
   }

@@ -178,6 +178,7 @@ function App() {
   const [isSavingAccount, setIsSavingAccount] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [loadingMessageBodyId, setLoadingMessageBodyId] = useState<string | null>(null);
   const [verifyingAccountId, setVerifyingAccountId] = useState<string | null>(null);
   const [showAccountSetup, setShowAccountSetup] = useState(false);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
@@ -283,6 +284,38 @@ function App() {
       accountId
     }));
     setActiveSurface("compose");
+  };
+
+  const openMessage = async (messageId: string, threadId: string) => {
+    setSelectedThreadId(threadId);
+    setActiveSurface("message");
+    setActionError(null);
+
+    const thread = workspace.threads.find((candidate) => candidate.id === threadId);
+    const needsRemoteFetch = thread?.messages.some(
+      (message) => message.id === messageId && message.contentMode === "remote-pending"
+    );
+
+    if (!needsRemoteFetch || !window.desktopApi) {
+      return;
+    }
+
+    setLoadingMessageBodyId(messageId);
+
+    try {
+      const result = await window.desktopApi.fetchMessageBody({
+        accountId: selectedAccount?.id ?? "",
+        messageId
+      });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message body fetch failed.");
+    } finally {
+      setLoadingMessageBodyId(null);
+    }
   };
 
   const handleAccountSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -783,8 +816,7 @@ function App() {
                       className={message.threadId === selectedThread?.id ? "message-row message-row-active" : "message-row"}
                       key={message.id}
                       onClick={() => {
-                        setSelectedThreadId(message.threadId);
-                        setActiveSurface("message");
+                        void openMessage(message.id, message.threadId);
                       }}
                       type="button"
                     >
@@ -1053,6 +1085,14 @@ function App() {
                         {message.contentMode === "html-blocked" ? (
                           <div className="thread-warning">
                             HTML content was blocked. Only a safe plain-text extraction is shown.
+                          </div>
+                        ) : null}
+
+                        {message.contentMode === "remote-pending" ? (
+                          <div className="thread-warning">
+                            {loadingMessageBodyId === message.id
+                              ? "Fetching the full RFC822 body from IMAP..."
+                              : "This message was synced as headers only. Open it from the list to fetch the full RFC822 body."}
                           </div>
                         ) : null}
 

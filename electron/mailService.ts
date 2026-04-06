@@ -4,13 +4,15 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   CreateAccountInput,
   CreateDraftInput,
+  FetchMessageBodyInput,
   MessageContentMode,
   RuntimeEnvironment,
   SmtpAuthMethod,
   TransportSecurity,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
-import { describeTransportError, sendPlainTextMessage, verifyAccountConnection } from "./providerClient.js";
+import type { InboxHeader } from "./providerClient.js";
+import { describeTransportError, fetchImapMessageBody, sendPlainTextMessage, verifyAccountConnection } from "./providerClient.js";
 
 type Cipher = {
   isAvailable: () => boolean;
@@ -47,6 +49,9 @@ type MessageRow = {
   body: string;
   verified: number;
   content_mode: MessageContentMode;
+  remote_message_ref?: string | null;
+  remote_sequence?: number | null;
+  remote_folder_name?: string | null;
   created_at: string;
 };
 
@@ -67,6 +72,22 @@ const textPreview = (value: string) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 140);
+
+const formatMailListTime = (value: string) => {
+  if (!value) {
+    return displayTime();
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric"
+  }).format(parsedDate);
+};
 
 const folderSortOrder = (kind: string, name: string) => {
   switch (kind) {
@@ -196,6 +217,9 @@ export class MailService {
         body TEXT NOT NULL,
         verified INTEGER NOT NULL,
         content_mode TEXT NOT NULL DEFAULT 'plain',
+        remote_message_ref TEXT,
+        remote_sequence INTEGER,
+        remote_folder_name TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (thread_id) REFERENCES threads (id) ON DELETE CASCADE,
         FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
@@ -221,6 +245,7 @@ export class MailService {
     `);
     this.ensureAccountTransportColumns();
     this.ensureFolderColumns();
+    this.ensureMessageRemoteColumns();
   }
 
   private ensureAccountTransportColumns() {
@@ -252,6 +277,24 @@ export class MailService {
 
     if (!columns.has("source")) {
       this.database.exec("ALTER TABLE folders ADD COLUMN source TEXT NOT NULL DEFAULT 'remote';");
+    }
+  }
+
+  private ensureMessageRemoteColumns() {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name)
+    );
+
+    if (!columns.has("remote_message_ref")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN remote_message_ref TEXT;");
+    }
+
+    if (!columns.has("remote_sequence")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN remote_sequence INTEGER;");
+    }
+
+    if (!columns.has("remote_folder_name")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN remote_folder_name TEXT;");
     }
   }
 
@@ -559,18 +602,209 @@ export class MailService {
     return folderId;
   }
 
+  private findFolderId(accountId: string, kind: WorkspaceSnapshot["folders"][number]["kind"], name?: string) {
+    const folder = this.database
+      .prepare(
+        `
+          SELECT id
+          FROM folders
+          WHERE account_id = ?
+            AND kind = ?
+            ${name ? "AND name = ?" : ""}
+          ORDER BY source DESC, sort_order ASC
+          LIMIT 1
+        `
+      )
+      .get(...(name ? [accountId, kind, name] : [accountId, kind])) as { id: string } | undefined;
+
+    return folder?.id ?? "";
+  }
+
+  private pruneOrphanThreads() {
+    this.database.exec(`
+      DELETE FROM threads
+      WHERE id NOT IN (
+        SELECT DISTINCT thread_id
+        FROM messages
+      )
+    `);
+  }
+
+  private upsertInboxHeaders(accountId: string, folderId: string, folderName: string, headers: InboxHeader[]) {
+    const seenRemoteRefs = new Set<string>();
+    const findExisting = this.database.prepare(
+      `
+        SELECT id, thread_id AS threadId, content_mode AS contentMode, body
+        FROM messages
+        WHERE account_id = ? AND remote_message_ref = ?
+        LIMIT 1
+      `
+    );
+    const insertThread = this.database.prepare(
+      "INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)"
+    );
+    const updateThread = this.database.prepare(
+      "UPDATE threads SET subject = ?, classification = ?, participants_json = ? WHERE id = ?"
+    );
+    const insertMessage = this.database.prepare(`
+      INSERT INTO messages (
+        id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
+        unread, trust, sent_at, body, verified, content_mode, remote_message_ref, remote_sequence,
+        remote_folder_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const updateMessage = this.database.prepare(`
+      UPDATE messages
+      SET
+        folder_id = ?,
+        sender = ?,
+        address = ?,
+        subject = ?,
+        preview = ?,
+        label = ?,
+        time = ?,
+        unread = ?,
+        trust = ?,
+        sent_at = ?,
+        verified = ?,
+        remote_sequence = ?,
+        remote_folder_name = ?
+      WHERE id = ?
+    `);
+
+    for (const header of headers) {
+      seenRemoteRefs.add(header.remoteMessageRef);
+
+      const sender = header.fromName || header.fromAddress || "Unknown sender";
+      const sentAt = header.date || "Unknown date";
+      const preview = `Header synced from IMAP. ${header.size} bytes on server.`;
+      const participants = JSON.stringify([header.fromAddress || sender]);
+      const existing = findExisting.get(accountId, header.remoteMessageRef) as
+        | {
+            id: string;
+            threadId: string;
+            contentMode: MessageContentMode;
+            body: string;
+          }
+        | undefined;
+
+      if (existing) {
+        updateThread.run(header.subject, "Inbox", participants, existing.threadId);
+        updateMessage.run(
+          folderId,
+          sender,
+          header.fromAddress || sender,
+          header.subject,
+          preview,
+          "Inbox",
+          formatMailListTime(header.date),
+          header.unread ? 1 : 0,
+          "review",
+          sentAt,
+          1,
+          header.sequence,
+          folderName,
+          existing.id
+        );
+        continue;
+      }
+
+      const createdAt = nowIso();
+      const threadId = makeId("thread");
+      insertThread.run(threadId, header.subject, "Inbox", participants, createdAt);
+      insertMessage.run(
+        makeId("message"),
+        threadId,
+        accountId,
+        folderId,
+        sender,
+        header.fromAddress || sender,
+        header.subject,
+        preview,
+        "Inbox",
+        formatMailListTime(header.date),
+        header.unread ? 1 : 0,
+        "review",
+        sentAt,
+        "Message body not loaded yet. Open this message to fetch the full RFC822 body from IMAP.",
+        1,
+        "remote-pending",
+        header.remoteMessageRef,
+        header.sequence,
+        folderName,
+        createdAt
+      );
+    }
+
+    if (seenRemoteRefs.size > 0) {
+      const placeholders = Array.from(seenRemoteRefs, () => "?").join(", ");
+      this.database
+        .prepare(
+          `
+            DELETE FROM messages
+            WHERE account_id = ?
+              AND remote_folder_name = ?
+              AND remote_message_ref IS NOT NULL
+              AND remote_message_ref NOT IN (${placeholders})
+          `
+        )
+        .run(accountId, folderName, ...Array.from(seenRemoteRefs));
+    } else {
+      this.database
+        .prepare(
+          `
+            DELETE FROM messages
+            WHERE account_id = ?
+              AND remote_folder_name = ?
+              AND remote_message_ref IS NOT NULL
+          `
+        )
+        .run(accountId, folderName);
+    }
+
+    this.pruneOrphanThreads();
+  }
+
   private replaceRemoteFolders(
     accountId: string,
     folders: Array<{ name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>
   ) {
-    this.database.prepare("DELETE FROM folders WHERE account_id = ? AND source = 'remote'").run(accountId);
-
+    const existingFolders = this.database
+      .prepare(
+        `
+          SELECT id, name, kind
+          FROM folders
+          WHERE account_id = ? AND source = 'remote'
+        `
+      )
+      .all(accountId) as Array<{ id: string; name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>;
+    const existingByKey = new Map(existingFolders.map((folder) => [`${folder.name}::${folder.kind}`, folder]));
+    const seenKeys = new Set<string>();
     const insertFolder = this.database.prepare(
       "INSERT INTO folders (id, account_id, name, kind, source, sort_order) VALUES (?, ?, ?, ?, 'remote', ?)"
     );
+    const updateFolder = this.database.prepare(
+      "UPDATE folders SET sort_order = ? WHERE id = ?"
+    );
 
     for (const folder of folders) {
+      const key = `${folder.name}::${folder.kind}`;
+      seenKeys.add(key);
+      const existing = existingByKey.get(key);
+
+      if (existing) {
+        updateFolder.run(folderSortOrder(folder.kind, folder.name), existing.id);
+        continue;
+      }
+
       insertFolder.run(makeId("folder"), accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
+    }
+
+    for (const folder of existingFolders) {
+      const key = `${folder.name}::${folder.kind}`;
+      if (!seenKeys.has(key)) {
+        this.database.prepare("DELETE FROM folders WHERE id = ?").run(folder.id);
+      }
     }
   }
 
@@ -722,6 +956,15 @@ export class MailService {
         accountId,
         summary.imap.folders.map((folder) => ({ name: folder.name, kind: folder.kind }))
       );
+      const inboxFolder =
+        summary.imap.folders.find((folder) => folder.kind === "inbox") ??
+        { name: "INBOX", kind: "inbox" as const };
+      const inboxFolderId =
+        this.findFolderId(accountId, "inbox", inboxFolder.name) || this.findFolderId(accountId, "inbox");
+
+      if (inboxFolderId) {
+        this.upsertInboxHeaders(accountId, inboxFolderId, inboxFolder.name, summary.imap.headers);
+      }
 
       this.database
         .prepare("UPDATE accounts SET status = ?, last_sync = ?, unread_count = ? WHERE id = ?")
@@ -729,7 +972,7 @@ export class MailService {
 
       this.addLedgerEntry(
         "Provider verification succeeded",
-        `${account.address} passed IMAP and SMTP verification. ${summary.imap.folders.length} folders discovered. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.`,
+        `${account.address} passed IMAP and SMTP verification. ${summary.imap.folders.length} folders discovered. ${summary.imap.headers.length} inbox headers synced. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.`,
         "info"
       );
       this.addSyncJob(`Connectivity verification for ${account.address}`, "IMAP and SMTP verification completed.", "complete");
@@ -838,6 +1081,80 @@ export class MailService {
 
       this.addLedgerEntry("Outbound delivery failed", `${account.address}: ${message}`, "critical");
       this.addSyncJob(`Outbound delivery for ${account.address}`, message, "complete");
+      throw new Error(message);
+    }
+  }
+
+  async fetchMessageBody(input: FetchMessageBodyInput, context: WorkspaceContext) {
+    const remoteMessage = this.database
+      .prepare(`
+        SELECT
+          id,
+          account_id AS accountId,
+          remote_sequence AS remoteSequence,
+          remote_folder_name AS remoteFolderName,
+          content_mode AS contentMode
+        FROM messages
+        WHERE id = ?
+      `)
+      .get(input.messageId) as
+      | {
+          id: string;
+          accountId: string;
+          remoteSequence?: number | null;
+          remoteFolderName?: string | null;
+          contentMode: MessageContentMode;
+        }
+      | undefined;
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    if (remoteMessage.accountId !== input.accountId) {
+      throw new Error("Message does not belong to the requested account.");
+    }
+
+    if (remoteMessage.contentMode !== "remote-pending") {
+      return this.getWorkspaceSnapshot(context);
+    }
+
+    if (!remoteMessage.remoteSequence || !remoteMessage.remoteFolderName) {
+      throw new Error("This message does not have a remote IMAP body to fetch.");
+    }
+
+    const account = this.getAccountPassword(remoteMessage.accountId);
+
+    try {
+      const body = await fetchImapMessageBody({
+        username: account.username,
+        password: account.password,
+        incomingServer: account.incomingServer,
+        incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
+        folderName: remoteMessage.remoteFolderName,
+        sequence: remoteMessage.remoteSequence
+      });
+
+      this.database
+        .prepare("UPDATE messages SET body = ?, content_mode = ? WHERE id = ?")
+        .run(body, "plain", input.messageId);
+
+      this.addLedgerEntry(
+        "Message body fetched from IMAP",
+        `${account.address} loaded the full RFC822 body for message ${input.messageId}.`,
+        "info"
+      );
+
+      return this.getWorkspaceSnapshot(context);
+    } catch (error) {
+      const message = describeTransportError(
+        error,
+        "IMAP",
+        account.incomingServer,
+        account.incomingPort
+      );
+      this.addLedgerEntry("Message body fetch failed", `${account.address}: ${message}`, "critical");
       throw new Error(message);
     }
   }
