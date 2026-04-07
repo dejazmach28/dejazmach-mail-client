@@ -30,6 +30,9 @@
   "build": {
     "appId": "com.dejazmach.mail",
     "productName": "DejAzmach",
+    "extraMetadata": {
+      "main": "dist-electron/electron/main.js"
+    },
     "asar": true,
     "compression": "maximum",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
@@ -47,7 +50,8 @@
       "icon": "assets/icons/256x256.png",
       "maintainer": "DejAzmach <hello@dejazmach.app>",
       "executableArgs": [
-        "--no-sandbox"
+        "--no-sandbox",
+        "--disable-setuid-sandbox"
       ],
       "target": [
         {

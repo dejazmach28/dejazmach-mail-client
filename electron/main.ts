@@ -1,5 +1,8 @@
-import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell, type MenuItemConstructorOptions } from "electron";
+import { app } from "electron";
+app.commandLine.appendSwitch("no-sandbox");
+app.commandLine.appendSwitch("disable-setuid-sandbox");
 app.setName("DejAzmach");
+import { BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell, type MenuItemConstructorOptions } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -432,8 +435,6 @@ if (!gotSingleInstanceLock) {
 }
 
 if (process.platform === "linux") {
-  app.commandLine.appendSwitch("no-sandbox");
-
   // Older Linux GPU stacks, especially Intel Ivy Bridge, commonly hang or paint a black window in Electron.
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
