@@ -139,6 +139,7 @@ const pushWorkspaceSnapshot = (snapshot: ReturnType<MailService["getWorkspaceSna
 };
 
 const updateUnreadBadge = (snapshot: ReturnType<MailService["getWorkspaceSnapshot"]>) => {
+  const preferences = requireMailService().getPreferences();
   const unreadCount = snapshot.messages.filter((message) => message.unread).length;
 
   if (process.platform === "darwin") {
@@ -149,13 +150,19 @@ const updateUnreadBadge = (snapshot: ReturnType<MailService["getWorkspaceSnapsho
     mainWindow.setOverlayIcon(null, "");
   }
 
-  app.setBadgeCount(unreadCount > 0 ? unreadCount : 0);
+  app.setBadgeCount(preferences.badgeCount && unreadCount > 0 ? unreadCount : 0);
 };
 
 const showIncomingMessageNotifications = (
   accountAddress: string,
   newMessages: Array<{ sender: string; subject: string }>
 ) => {
+  const preferences = requireMailService().getPreferences();
+
+  if (!preferences.desktopNotifications) {
+    return;
+  }
+
   if (newMessages.length === 0) {
     return;
   }
@@ -190,6 +197,32 @@ const showIncomingMessageNotifications = (
   } catch (error) {
     console.error("Notification delivery failed.", error);
   }
+};
+
+const restartBackgroundSyncLoop = () => {
+  if (initialBackgroundSyncTimeout) {
+    clearTimeout(initialBackgroundSyncTimeout);
+    initialBackgroundSyncTimeout = null;
+  }
+
+  if (backgroundSyncInterval) {
+    clearInterval(backgroundSyncInterval);
+    backgroundSyncInterval = null;
+  }
+
+  const syncIntervalMs = requireMailService().getPreferences().syncIntervalMinutes * 60_000;
+
+  initialBackgroundSyncTimeout = setTimeout(() => {
+    void syncAllAccountInboxes().catch((error) => {
+      console.error("Initial background sync failed.", error);
+    });
+  }, 5000);
+
+  backgroundSyncInterval = setInterval(() => {
+    void syncAllAccountInboxes().catch((error) => {
+      console.error("Background sync interval failed.", error);
+    });
+  }, syncIntervalMs);
 };
 
 const isReauthMessage = (error: unknown) =>
@@ -552,6 +585,97 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:update-account-display-name", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().updateAccountDisplayName(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:update-account-imap", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().updateAccountImap(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:update-account-smtp", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().updateAccountSmtp(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:delete-account", async (_event, accountId) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().deleteAccount(accountId, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:get-preferences", async () => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().getPreferences()
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
+
+  ipcMain.handle("app:set-preferences", async (_event, input) => {
+    try {
+      const preferences = requireMailService().setPreferences(input);
+      restartBackgroundSyncLoop();
+      updateUnreadBadge(requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
+      return {
+        ok: true as const,
+        data: preferences
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
+
   ipcMain.handle("app:reauth-account", async (_event, input) => {
     try {
       await requireMailService().reauthAccount(input.accountId, input.password, createWorkspaceContext());
@@ -741,18 +865,7 @@ app.whenReady().then(async () => {
   const window = createMainWindow();
   await loadApplicationUi(window);
   updateUnreadBadge(requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
-
-  initialBackgroundSyncTimeout = setTimeout(() => {
-    void syncAllAccountInboxes().catch((error) => {
-      console.error("Initial background sync failed.", error);
-    });
-  }, 5000);
-
-  backgroundSyncInterval = setInterval(() => {
-    void syncAllAccountInboxes().catch((error) => {
-      console.error("Background sync interval failed.", error);
-    });
-  }, 60000);
+  restartBackgroundSyncLoop();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -43,14 +43,100 @@ const getFolderIcon = (folder: FolderSummary) => {
   }
 
   if (["archive", "all mail", "[gmail]/all mail"].includes(normalizedName)) {
-    return "☐";
+    return "📦";
   }
 
   if (["spam", "junk", "junk email"].includes(normalizedName)) {
-    return "⛨";
+    return "🛡";
   }
 
-  return "▣";
+  return "📁";
+};
+
+const systemFolderOrder = [
+  "inbox",
+  "sent",
+  "drafts",
+  "junk",
+  "trash",
+  "archive"
+] as const;
+
+const getSystemFolderKey = (folder: FolderSummary) => {
+  const normalizedName = folder.name.trim().toLowerCase();
+
+  if (normalizedName === "inbox") {
+    return "inbox";
+  }
+
+  if (["sent", "sent items", "sent mail"].includes(normalizedName)) {
+    return "sent";
+  }
+
+  if (["drafts", "draft"].includes(normalizedName)) {
+    return "drafts";
+  }
+
+  if (["junk", "junk email", "spam"].includes(normalizedName)) {
+    return "junk";
+  }
+
+  if (["trash", "deleted", "deleted items", "bin"].includes(normalizedName)) {
+    return "trash";
+  }
+
+  if (["archive", "all mail", "[gmail]/all mail"].includes(normalizedName)) {
+    return "archive";
+  }
+
+  return null;
+};
+
+type FolderRenderItem =
+  | {
+      type: "parent";
+      key: string;
+      label: string;
+      depth: number;
+    }
+  | {
+      type: "folder";
+      key: string;
+      label: string;
+      depth: number;
+      folder: FolderSummary;
+    };
+
+const buildCustomFolderItems = (folders: FolderSummary[]) => {
+  const items: FolderRenderItem[] = [];
+  const seenParents = new Set<string>();
+
+  for (const folder of folders) {
+    const parts = folder.name.split(".").filter(Boolean);
+
+    if (parts.length > 1) {
+      const parentKey = parts[0].toLowerCase();
+      if (!seenParents.has(parentKey)) {
+        seenParents.add(parentKey);
+        items.push({
+          type: "parent",
+          key: `parent:${parentKey}`,
+          label: parts[0],
+          depth: 0
+        });
+      }
+    }
+
+    items.push({
+      type: "folder",
+      key: folder.id,
+      label: parts.length > 1 ? parts[parts.length - 1] : folder.name,
+      depth: Math.max(0, parts.length - 1),
+      folder
+    });
+  }
+
+  return items;
 };
 
 export function Sidebar({
@@ -66,6 +152,14 @@ export function Sidebar({
   onShowAddAccount,
   onRequestReauth
 }: SidebarProps) {
+  const systemFolders = systemFolderOrder
+    .map((key) => folders.find((folder) => getSystemFolderKey(folder) === key))
+    .filter((folder): folder is FolderSummary => Boolean(folder));
+  const customFolders = folders
+    .filter((folder) => !getSystemFolderKey(folder))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  const customFolderItems = buildCustomFolderItems(customFolders);
+
   useEffect(() => {
     console.log("[sidebar] selected account:", selectedAccountId);
     console.log(
@@ -142,7 +236,7 @@ export function Sidebar({
               <span className="eyebrow eyebrow-inverse">Folders</span>
             </div>
             <div className="folder-stack">
-              {folders.map((folder) => (
+              {systemFolders.map((folder) => (
                 <button
                   className={folder.id === selectedFolderId ? "folder-tile folder-tile-active" : "folder-tile"}
                   key={folder.id}
@@ -153,11 +247,44 @@ export function Sidebar({
                     <span className="folder-icon" aria-hidden="true">
                       {getFolderIcon(folder)}
                     </span>
-                    {folder.name}
+                    {getSystemFolderKey(folder) === "junk" ? "Spam" : folder.name}
                   </span>
                   {folder.count > 0 ? <span className="folder-count">{folder.count}</span> : null}
                 </button>
               ))}
+
+              {customFolderItems.length > 0 ? <div className="folder-divider" aria-hidden="true" /> : null}
+
+              {customFolderItems.map((item) =>
+                item.type === "parent" ? (
+                  <div className="folder-parent" key={item.key}>
+                    <span className="folder-parent-chevron" aria-hidden="true">
+                      ▾
+                    </span>
+                    <span>{item.label}</span>
+                  </div>
+                ) : (
+                  <button
+                    className={
+                      item.folder.id === selectedFolderId
+                        ? "folder-tile folder-tile-active"
+                        : "folder-tile"
+                    }
+                    key={item.key}
+                    onClick={() => onSelectFolder(item.folder.id)}
+                    style={{ paddingLeft: `${12 + item.depth * 18}px` }}
+                    type="button"
+                  >
+                    <span className={item.depth > 0 ? "folder-label folder-label-nested" : "folder-label"}>
+                      <span className="folder-icon" aria-hidden="true">
+                        {getFolderIcon(item.folder)}
+                      </span>
+                      {item.label}
+                    </span>
+                    {item.folder.count > 0 ? <span className="folder-count">{item.folder.count}</span> : null}
+                  </button>
+                )
+              )}
             </div>
           </>
         ) : (

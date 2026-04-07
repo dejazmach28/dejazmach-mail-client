@@ -61,6 +61,12 @@ export type AccountSummary = {
   unreadCount: number;
   storage: string;
   needsReauth: boolean;
+  incomingServer: string;
+  incomingPort: number;
+  incomingSecurity: TransportSecurity;
+  outgoingServer: string;
+  outgoingPort: number;
+  outgoingSecurity: TransportSecurity;
 };
 
 export type FolderSummary = {
@@ -208,6 +214,32 @@ export type ReauthAccountInput = {
   password: string;
 };
 
+export type UpdateAccountDisplayNameInput = {
+  accountId: string;
+  name: string;
+};
+
+export type UpdateAccountImapInput = {
+  accountId: string;
+  incomingServer: string;
+  incomingPort: number;
+  incomingSecurity: TransportSecurity;
+};
+
+export type UpdateAccountSmtpInput = {
+  accountId: string;
+  outgoingServer: string;
+  outgoingPort: number;
+  outgoingSecurity: TransportSecurity;
+};
+
+export type NotificationPreferences = {
+  desktopNotifications: boolean;
+  soundAlert: boolean;
+  badgeCount: boolean;
+  syncIntervalMinutes: 1 | 5 | 15 | 30 | 60;
+};
+
 export type ActionResult<T> =
   | {
       ok: true;
@@ -237,6 +269,12 @@ export type DesktopApi = {
   getSignature: (accountId: string) => Promise<ActionResult<{ body: string }>>;
   setSignature: (input: SignatureInput) => Promise<ActionResult<{ body: string }>>;
   reauthAccount: (input: ReauthAccountInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  updateAccountDisplayName: (input: UpdateAccountDisplayNameInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  updateAccountImap: (input: UpdateAccountImapInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  updateAccountSmtp: (input: UpdateAccountSmtpInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  deleteAccount: (accountId: string) => Promise<ActionResult<WorkspaceSnapshot>>;
+  getPreferences: () => Promise<ActionResult<NotificationPreferences>>;
+  setPreferences: (input: NotificationPreferences) => Promise<ActionResult<NotificationPreferences>>;
   saveAttachment: (input: SaveAttachmentInput) => Promise<SaveAttachmentResult>;
   onWorkspaceUpdate: (callback: (snapshot: WorkspaceSnapshot) => void) => () => void;
 };

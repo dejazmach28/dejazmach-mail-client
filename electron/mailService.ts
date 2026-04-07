@@ -9,11 +9,15 @@ import type {
   FetchMessageBodyResult,
   MessageMutationInput,
   MessageContentMode,
+  NotificationPreferences,
   RuntimeEnvironment,
   SyncFolderInput,
   SmtpAuthMethod,
   ToggleFlagInput,
   TransportSecurity,
+  UpdateAccountDisplayNameInput,
+  UpdateAccountImapInput,
+  UpdateAccountSmtpInput,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
 import type { InboxHeader } from "./providerClient.js";
@@ -177,6 +181,13 @@ const createReleaseTargets = () => [
   }
 ];
 
+const defaultPreferences: NotificationPreferences = {
+  desktopNotifications: true,
+  soundAlert: false,
+  badgeCount: true,
+  syncIntervalMinutes: 1
+};
+
 export class MailService {
   private readonly database: DatabaseSync;
 
@@ -291,10 +302,27 @@ export class MailService {
         body TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS preferences (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        desktop_notifications INTEGER NOT NULL DEFAULT 1,
+        sound_alert INTEGER NOT NULL DEFAULT 0,
+        badge_count INTEGER NOT NULL DEFAULT 1,
+        sync_interval_minutes INTEGER NOT NULL DEFAULT 1
+      );
     `);
     this.ensureAccountTransportColumns();
     this.ensureFolderColumns();
     this.ensureMessageRemoteColumns();
+    this.database
+      .prepare(
+        `
+          INSERT INTO preferences (id, desktop_notifications, sound_alert, badge_count, sync_interval_minutes)
+          VALUES (1, 1, 0, 1, 1)
+          ON CONFLICT(id) DO NOTHING
+        `
+      )
+      .run();
   }
 
   private ensureAccountTransportColumns() {
@@ -627,7 +655,13 @@ export class MailService {
           last_sync AS lastSync,
           unread_count AS unreadCount,
           storage,
-          needs_reauth AS needsReauth
+          needs_reauth AS needsReauth,
+          incoming_server AS incomingServer,
+          incoming_port AS incomingPort,
+          incoming_security AS incomingSecurity,
+          outgoing_server AS outgoingServer,
+          outgoing_port AS outgoingPort,
+          outgoing_security AS outgoingSecurity
         FROM accounts
         ORDER BY created_at ASC
       `)
@@ -1402,6 +1436,107 @@ export class MailService {
         ...account,
         needsReauth: Boolean(account.needsReauth)
       })) as Array<{ id: string; address: string; needsReauth: boolean }>;
+  }
+
+  getPreferences(): NotificationPreferences {
+    const row = this.database
+      .prepare(
+        `
+          SELECT
+            desktop_notifications AS desktopNotifications,
+            sound_alert AS soundAlert,
+            badge_count AS badgeCount,
+            sync_interval_minutes AS syncIntervalMinutes
+          FROM preferences
+          WHERE id = 1
+        `
+      )
+      .get() as
+      | {
+          desktopNotifications: number;
+          soundAlert: number;
+          badgeCount: number;
+          syncIntervalMinutes: number;
+        }
+      | undefined;
+
+    if (!row) {
+      return defaultPreferences;
+    }
+
+    return {
+      desktopNotifications: Boolean(row.desktopNotifications),
+      soundAlert: Boolean(row.soundAlert),
+      badgeCount: Boolean(row.badgeCount),
+      syncIntervalMinutes: [1, 5, 15, 30, 60].includes(row.syncIntervalMinutes)
+        ? (row.syncIntervalMinutes as NotificationPreferences["syncIntervalMinutes"])
+        : 1
+    };
+  }
+
+  setPreferences(input: NotificationPreferences) {
+    this.database
+      .prepare(
+        `
+          INSERT INTO preferences (id, desktop_notifications, sound_alert, badge_count, sync_interval_minutes)
+          VALUES (1, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            desktop_notifications = excluded.desktop_notifications,
+            sound_alert = excluded.sound_alert,
+            badge_count = excluded.badge_count,
+            sync_interval_minutes = excluded.sync_interval_minutes
+        `
+      )
+      .run(
+        input.desktopNotifications ? 1 : 0,
+        input.soundAlert ? 1 : 0,
+        input.badgeCount ? 1 : 0,
+        input.syncIntervalMinutes
+      );
+
+    return this.getPreferences();
+  }
+
+  updateAccountDisplayName(input: UpdateAccountDisplayNameInput, context: WorkspaceContext) {
+    this.database.prepare("UPDATE accounts SET name = ? WHERE id = ?").run(input.name.trim() || "Mailbox", input.accountId);
+    return this.getWorkspaceSnapshot(context);
+  }
+
+  updateAccountImap(input: UpdateAccountImapInput, context: WorkspaceContext) {
+    this.database
+      .prepare("UPDATE accounts SET incoming_server = ?, incoming_port = ?, incoming_security = ? WHERE id = ?")
+      .run(input.incomingServer, input.incomingPort, input.incomingSecurity, input.accountId);
+    return this.getWorkspaceSnapshot(context);
+  }
+
+  updateAccountSmtp(input: UpdateAccountSmtpInput, context: WorkspaceContext) {
+    this.database
+      .prepare("UPDATE accounts SET outgoing_server = ?, outgoing_port = ?, outgoing_security = ? WHERE id = ?")
+      .run(input.outgoingServer, input.outgoingPort, input.outgoingSecurity, input.accountId);
+    return this.getWorkspaceSnapshot(context);
+  }
+
+  deleteAccount(accountId: string, context: WorkspaceContext) {
+    const threadIds = (
+      this.database
+        .prepare("SELECT DISTINCT thread_id AS threadId FROM messages WHERE account_id = ?")
+        .all(accountId) as Array<{ threadId: string }>
+    ).map((thread) => thread.threadId);
+
+    this.database.prepare("DELETE FROM account_secrets WHERE account_id = ?").run(accountId);
+    this.database.prepare("DELETE FROM signatures WHERE account_id = ?").run(accountId);
+    this.database.prepare("DELETE FROM messages WHERE account_id = ?").run(accountId);
+    this.database.prepare("DELETE FROM folders WHERE account_id = ?").run(accountId);
+    this.database.prepare("DELETE FROM accounts WHERE id = ?").run(accountId);
+
+    if (threadIds.length > 0) {
+      this.database
+        .prepare(`DELETE FROM threads WHERE id IN (${threadIds.map(() => "?").join(", ")})`)
+        .run(...threadIds);
+    }
+
+    this.pruneOrphanThreads();
+    return this.getWorkspaceSnapshot(context);
   }
 
   async syncFolderWithResult(

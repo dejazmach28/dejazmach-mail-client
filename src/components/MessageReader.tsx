@@ -16,12 +16,6 @@ type MessageReaderProps = {
   onForward: () => void;
 };
 
-const trustClassMap = {
-  trusted: "mini-pill mini-pill-neutral",
-  encrypted: "mini-pill mini-pill-success",
-  review: "mini-pill mini-pill-warning"
-} as const;
-
 const getInitials = (value: string) =>
   value
     .split(" ")
@@ -73,6 +67,7 @@ export function MessageReader({
   const [messageViewMode, setMessageViewMode] = useState<Record<string, "html" | "plain">>({});
   const [htmlLoadingMessageId, setHtmlLoadingMessageId] = useState<string | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
 
   const handleShowHtml = (messageId: string) => {
     setHtmlLoadingMessageId(messageId);
@@ -117,23 +112,26 @@ export function MessageReader({
         </div>
 
         <div className="reader-actions">
-          {readerMessage ? <span className={trustClassMap[readerMessage.trust]}>{readerMessage.trust}</span> : null}
           {readerMessage ? (
             <button
-              className={readerMessage.flagged ? "reader-action-button flag-button-active" : "reader-action-button"}
+              aria-label={readerMessage.flagged ? "Unstar message" : "Star message"}
+              className="btn-icon"
               onClick={() => onToggleFlag(!readerMessage.flagged)}
               type="button"
             >
-              {readerMessage.flagged ? "Unstar" : "Star"}
+              <span className={readerMessage.flagged ? "flag-button flag-button-active" : "flag-button"}>
+                {readerMessage.flagged ? "★" : "☆"}
+              </span>
             </button>
           ) : null}
           <div className="more-menu-shell">
             <button
-              className="reader-action-button"
+              aria-label="More actions"
+              className="btn-icon"
               onClick={() => setMoreMenuOpen((current) => !current)}
               type="button"
             >
-              More
+              ⋯
             </button>
             {moreMenuOpen ? (
               <div className="more-menu">
@@ -142,6 +140,9 @@ export function MessageReader({
                 </button>
                 <button onClick={onMarkSpam} type="button">
                   Mark as spam
+                </button>
+                <button onClick={() => window.print()} type="button">
+                  Print
                 </button>
               </div>
             ) : null}
@@ -256,35 +257,41 @@ export function MessageReader({
         ))}
       </div>
 
-      <footer className="compose-actions">
-        <select
-          className="move-select"
-          defaultValue=""
-          onChange={(event) => {
-            if (event.target.value) {
-              onMove(event.target.value);
-              event.target.value = "";
-            }
-          }}
-        >
-          <option value="">Move to...</option>
-          {folders.map((folder) => (
-            <option key={folder.id} value={folder.name}>
-              {folder.name}
-            </option>
-          ))}
-        </select>
-        <button className="secondary-button" onClick={onArchive} type="button">
-          Archive
-        </button>
-        <button className="secondary-button" onClick={onDelete} type="button">
+      <footer className="reader-footer">
+        <div className="reader-footer-left">
+          <button className="btn-action" onClick={onReply} type="button">
+            Reply
+          </button>
+          <button className="btn-action" onClick={onForward} type="button">
+            Forward
+          </button>
+          <button className="btn-action" onClick={onArchive} type="button">
+            📦 Archive
+          </button>
+          <div className="more-menu-shell">
+            <button className="btn-action" onClick={() => setMoveMenuOpen((current) => !current)} type="button">
+              Move to ▾
+            </button>
+            {moveMenuOpen ? (
+              <div className="more-menu">
+                {folders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => {
+                      setMoveMenuOpen(false);
+                      onMove(folder.name);
+                    }}
+                    type="button"
+                  >
+                    {folder.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <button className="btn-action-danger" onClick={onDelete} type="button">
           Delete
-        </button>
-        <button className="secondary-button" onClick={onReply} type="button">
-          Reply
-        </button>
-        <button className="primary-button" onClick={onForward} type="button">
-          Forward
         </button>
       </footer>
     </article>

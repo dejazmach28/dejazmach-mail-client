@@ -6,12 +6,13 @@ type MessageListProps = {
   accountId?: string;
   folderName: string;
   unreadCount?: number;
+  isAutoSyncing?: boolean;
   messages: MailSummary[];
   searchQuery: string;
   selectedThreadId: string;
   selectedFolderName?: string;
   onOpenMessage: (messageId: string, threadId: string, accountId: string) => void;
-  onSyncComplete: (workspace: WorkspaceSnapshot) => void;
+  onSyncComplete: (workspace: WorkspaceSnapshot, folderName: string) => void;
   onSyncError: (message: string) => void;
   onSearchQueryChange: (value: string) => void;
 };
@@ -33,24 +34,26 @@ type MessageRowProps = {
 function MessageRow({ isSelected, message, onOpen }: MessageRowProps) {
   const rowClassName = [
     "message-row",
-    isSelected ? "message-row-active" : "",
-    message.unread ? "message-row-unread" : ""
+    isSelected ? "message-row-selected" : "",
+    message.unread ? "message-row-unread" : "message-row-read"
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
     <button className={rowClassName} onClick={() => onOpen(message.id, message.threadId, message.accountId)} type="button">
+      <span className="message-edge">
+        {message.unread ? <span className="message-unread-dot" aria-hidden="true" /> : null}
+      </span>
       <span className="message-avatar">{getInitials(message.sender)}</span>
       <span className="message-copy">
         <span className="message-line">
-          <strong>{message.sender}</strong>
+          <strong className="message-sender">{message.sender}</strong>
           <span>{message.time}</span>
         </span>
         <span className="message-subject">
           {message.flagged ? <span className="message-flagged" aria-label="Flagged message">★</span> : null}
-          {message.unread ? <strong>{message.subject}</strong> : message.subject}
-          {message.unread ? <span className="unread-dot" aria-hidden="true" /> : null}
+          <span className="message-subject-text">{message.subject}</span>
         </span>
         <span className="message-preview">{message.preview}</span>
       </span>
@@ -62,6 +65,7 @@ export function MessageList({
   accountId,
   folderName,
   unreadCount,
+  isAutoSyncing,
   messages,
   searchQuery,
   selectedThreadId,
@@ -88,7 +92,7 @@ export function MessageList({
     try {
       const result = await window.desktopApi.syncFolder({ accountId, folderName });
       if (result.data) {
-        onSyncComplete(result.data);
+        onSyncComplete(result.data, folderName);
       }
       if (!result.ok) {
         throw new Error(result.error);
@@ -106,6 +110,7 @@ export function MessageList({
         <div>
           <span className="eyebrow">Mailbox</span>
           <h2>{folderName}</h2>
+          {isAutoSyncing || isSyncing ? <span className="pane-sync-indicator">Syncing...</span> : null}
         </div>
         <div className="pane-actions">
           <button

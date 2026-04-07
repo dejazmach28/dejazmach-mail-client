@@ -203,6 +203,8 @@ function App() {
   const [reauthPassword, setReauthPassword] = useState("");
   const [isReauthenticating, setIsReauthenticating] = useState(false);
   const [dismissedReauthIds, setDismissedReauthIds] = useState<string[]>([]);
+  const [folderSyncTimestamps, setFolderSyncTimestamps] = useState<Record<string, number>>({});
+  const [autoSyncingFolderKey, setAutoSyncingFolderKey] = useState<string | null>(null);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
     accountId: "",
@@ -329,6 +331,7 @@ function App() {
     workspace.accounts.find((account) => account.id === selectedAccountId) ?? workspace.accounts[0];
   const visibleFolders = selectedAccount ? getAccountFolders(workspace, selectedAccount.id) : [];
   const selectedFolder = visibleFolders.find((folder) => folder.id === selectedFolderId) ?? visibleFolders[0];
+  const selectedFolderKey = selectedAccount && selectedFolder ? `${selectedAccount.id}:${selectedFolder.id}` : null;
   const accountMessages = selectedAccount
     ? workspace.messages.filter((message) => message.accountId === selectedAccount.id)
     : [];
@@ -348,10 +351,56 @@ function App() {
     workspace.threads.find((thread) => thread.id === visibleMessages[0]?.threadId);
   const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
   const activeThreadMessage = selectedThread?.messages[0];
-  const recentActivity = workspace.shellState.transparencyLedger.slice(0, 4);
-  const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
-  const recentSyncJobs = workspace.syncJobs.slice(0, 3);
   const reauthAccount = workspace.accounts.find((account) => account.id === reauthAccountId);
+
+  useEffect(() => {
+    if (!window.desktopApi || !selectedAccount?.id || !selectedFolder?.name || !selectedFolderKey) {
+      return;
+    }
+
+    const lastSyncedAt = folderSyncTimestamps[selectedFolderKey] ?? 0;
+    if (Date.now() - lastSyncedAt < 2 * 60 * 1000) {
+      return;
+    }
+
+    let cancelled = false;
+    setAutoSyncingFolderKey(selectedFolderKey);
+
+    void window.desktopApi
+      .syncFolder({
+        accountId: selectedAccount.id,
+        folderName: selectedFolder.name
+      })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (result.data) {
+          applyWorkspace(result.data);
+        }
+
+        unwrapResult(result);
+        setFolderSyncTimestamps((current) => ({
+          ...current,
+          [selectedFolderKey]: Date.now()
+        }));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setActionError(error instanceof Error ? error.message : "Folder sync failed.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAutoSyncingFolderKey((current) => (current === selectedFolderKey ? null : current));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [folderSyncTimestamps, selectedAccount?.id, selectedFolder?.name, selectedFolderKey]);
 
   const updateAccountForm = <K extends keyof CreateAccountInput>(field: K, value: CreateAccountInput[K]) => {
     setAccountForm((current) => ({
@@ -857,10 +906,19 @@ function App() {
             <MessageList
               accountId={selectedAccount?.id}
               folderName={selectedFolder?.name ?? "Folders"}
+              isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
               messages={visibleMessages}
               onOpenMessage={openMessage}
               onSearchQueryChange={setSearchQuery}
-              onSyncComplete={applyWorkspace}
+              onSyncComplete={(nextWorkspace, syncedFolderName) => {
+                applyWorkspace(nextWorkspace);
+                if (selectedAccount?.id && selectedFolder?.name === syncedFolderName && selectedFolderKey) {
+                  setFolderSyncTimestamps((current) => ({
+                    ...current,
+                    [selectedFolderKey]: Date.now()
+                  }));
+                }
+              }}
               onSyncError={(message) => setActionError(message)}
               searchQuery={searchQuery}
               selectedFolderName={selectedFolder?.name}
@@ -883,15 +941,16 @@ function App() {
               ) : activeSurface === "settings" ? (
                 <SettingsPanel
                   environment={workspace.shellState.environment}
+                  onError={(message) => setActionError(message)}
+                  onNotice={showActionNotice}
                   onSignatureSaved={() => showActionNotice("Signature saved.", 2000)}
                   onVerifyAccount={(accountId) => {
                     void handleVerifyAccount(accountId);
                   }}
+                  onWorkspaceChange={applyWorkspace}
                   platform={workspace.shellState.platform}
-                  recentActivity={recentActivity}
-                  recentSecurityMetrics={recentSecurityMetrics}
-                  recentSyncJobs={recentSyncJobs}
                   selectedAccount={selectedAccount}
+                  version={workspace.shellState.version}
                   verifyingAccountId={verifyingAccountId}
                 />
               ) : (

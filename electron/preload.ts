@@ -20,6 +20,12 @@ const desktopApi = {
   getSignature: (accountId) => ipcRenderer.invoke("app:get-signature", accountId),
   setSignature: (input) => ipcRenderer.invoke("app:set-signature", input),
   reauthAccount: (input) => ipcRenderer.invoke("app:reauth-account", input),
+  updateAccountDisplayName: (input) => ipcRenderer.invoke("app:update-account-display-name", input),
+  updateAccountImap: (input) => ipcRenderer.invoke("app:update-account-imap", input),
+  updateAccountSmtp: (input) => ipcRenderer.invoke("app:update-account-smtp", input),
+  deleteAccount: (accountId) => ipcRenderer.invoke("app:delete-account", accountId),
+  getPreferences: () => ipcRenderer.invoke("app:get-preferences"),
+  setPreferences: (input) => ipcRenderer.invoke("app:set-preferences", input),
   saveAttachment: (input) => ipcRenderer.invoke("app:save-attachment", input),
   onWorkspaceUpdate: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot);
