@@ -24,9 +24,10 @@ mkdir -p "$PKG_DIR/usr/share/applications"
 mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 
 cp -a "$APP_DIR/." "$PKG_DIR/opt/DejAzmach/"
+cp "$ROOT_DIR/build/linux/launcher.sh" "$PKG_DIR/opt/DejAzmach/dejazmach-mail-client-launcher"
 cp "$ROOT_DIR/build/linux/postinst.sh" "$PKG_DIR/DEBIAN/postinst"
 cp "$ROOT_DIR/build/linux/postrm.sh" "$PKG_DIR/DEBIAN/postrm"
-chmod 755 "$PKG_DIR/DEBIAN/postinst" "$PKG_DIR/DEBIAN/postrm"
+chmod 755 "$PKG_DIR/DEBIAN/postinst" "$PKG_DIR/DEBIAN/postrm" "$PKG_DIR/opt/DejAzmach/dejazmach-mail-client-launcher"
 
 cat > "$PKG_DIR/DEBIAN/control" <<'EOF'
 Package: dejazmach-mail-client
@@ -45,7 +46,7 @@ cat > "$PKG_DIR/usr/share/applications/dejazmach-mail-client.desktop" <<'EOF'
 [Desktop Entry]
 Name=DejAzmach
 Comment=Secure desktop mail client
-Exec=/opt/DejAzmach/dejazmach-mail-client
+Exec=/opt/DejAzmach/dejazmach-mail-client-launcher
 Icon=dejazmach-mail-client
 Terminal=false
 Type=Application
@@ -54,7 +55,7 @@ StartupWMClass=DejAzmach
 EOF
 
 cp \
-  "$ROOT_DIR/node_modules/app-builder-lib/templates/icons/electron-linux/256x256.png" \
+  "$ROOT_DIR/assets/icons/256x256.png" \
   "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/dejazmach-mail-client.png"
 
 rm -f "$OUTPUT_DEB"

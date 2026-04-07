@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="DejAzmach icon">
+  <circle cx="256" cy="256" r="224" fill="#1a1f2e" />
+  <rect x="128" y="176" width="256" height="160" rx="24" fill="#ffffff" />
+  <path d="M144 192L256 272L368 192" fill="none" stroke="#1a1f2e" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M144 320L232 248" fill="none" stroke="#1a1f2e" stroke-width="18" stroke-linecap="round" />
+  <path d="M368 320L280 248" fill="none" stroke="#1a1f2e" stroke-width="18" stroke-linecap="round" />
+</svg>

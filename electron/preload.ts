@@ -1,6 +1,6 @@
-import type * as Electron from "electron";
+import electron from "electron";
 import type { DesktopApi } from "../shared/contracts.js";
-const { contextBridge, ipcRenderer } = require("electron/renderer") as typeof Electron;
+const { contextBridge, ipcRenderer } = electron;
 
 const desktopApi = {
   getWorkspaceSnapshot: () => ipcRenderer.invoke("app:get-workspace-snapshot"),
