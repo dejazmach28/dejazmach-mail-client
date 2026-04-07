@@ -47,7 +47,8 @@ test("parseImapFetchEnvelope extracts inbox header fields", () => {
       date: "Mon, 01 Apr 2024 10:00:00 +0000",
       flags: ["\\Seen"],
       unread: false,
-      size: 2048
+      size: 2048,
+      preview: ""
     }
   );
 });

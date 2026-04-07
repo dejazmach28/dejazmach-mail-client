@@ -71,7 +71,19 @@ export function MessageReader({
   onForward
 }: MessageReaderProps) {
   const [messageViewMode, setMessageViewMode] = useState<Record<string, "html" | "plain">>({});
+  const [htmlLoadingMessageId, setHtmlLoadingMessageId] = useState<string | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+
+  const handleShowHtml = (messageId: string) => {
+    setHtmlLoadingMessageId(messageId);
+    window.setTimeout(() => {
+      setMessageViewMode((currentMode) => ({
+        ...currentMode,
+        [messageId]: "html"
+      }));
+      setHtmlLoadingMessageId((currentId) => (currentId === messageId ? null : currentId));
+    }, 120);
+  };
 
   if (!thread) {
     return (
@@ -108,22 +120,20 @@ export function MessageReader({
           {readerMessage ? <span className={trustClassMap[readerMessage.trust]}>{readerMessage.trust}</span> : null}
           {readerMessage ? (
             <button
-              aria-label={readerMessage.flagged ? "Remove star" : "Star message"}
-              className={readerMessage.flagged ? "flag-button flag-button-active" : "flag-button"}
+              className={readerMessage.flagged ? "reader-action-button flag-button-active" : "reader-action-button"}
               onClick={() => onToggleFlag(!readerMessage.flagged)}
               type="button"
             >
-              ★
+              {readerMessage.flagged ? "Unstar" : "Star"}
             </button>
           ) : null}
           <div className="more-menu-shell">
             <button
-              aria-label="More actions"
-              className="icon-button"
+              className="reader-action-button"
               onClick={() => setMoreMenuOpen((current) => !current)}
               type="button"
             >
-              ⋯
+              More
             </button>
             {moreMenuOpen ? (
               <div className="more-menu">
@@ -159,11 +169,18 @@ export function MessageReader({
             </div>
 
             {message.contentMode === "remote-pending" ? (
-              <div className="thread-warning">
-                {loadingMessageBodyId === message.id
-                  ? "Fetching the full RFC822 body from IMAP..."
-                  : "This message was synced as headers only. Open it from the list to fetch the full RFC822 body."}
-              </div>
+              loadingMessageBodyId === message.id ? (
+                <div className="thread-loading-shell" aria-live="polite">
+                  <div className="skeleton-bar" style={{ width: "60%", height: "18px" }} />
+                  <div className="skeleton-bar" style={{ width: "100%", height: "14px" }} />
+                  <div className="skeleton-bar" style={{ width: "90%", height: "14px" }} />
+                  <div className="skeleton-bar" style={{ width: "75%", height: "14px" }} />
+                </div>
+              ) : (
+                <div className="thread-warning">
+                  This message was synced as headers only. Open it from the list to fetch the full RFC822 body.
+                </div>
+              )
             ) : null}
 
             {message.html && !messageViewMode[message.id] ? (
@@ -172,12 +189,7 @@ export function MessageReader({
                 <div className="html-choice-actions">
                   <button
                     className="html-choice-button"
-                    onClick={() =>
-                      setMessageViewMode((currentMode) => ({
-                        ...currentMode,
-                        [message.id]: "html"
-                      }))
-                    }
+                    onClick={() => handleShowHtml(message.id)}
                     type="button"
                   >
                     Show formatted version
@@ -198,10 +210,17 @@ export function MessageReader({
               </div>
             ) : null}
 
-            {message.html && messageViewMode[message.id] === "html" ? (
-              <div className="html-email-body" dangerouslySetInnerHTML={{ __html: readerHtmlChoices[message.id] ?? "" }} />
+            {message.html && htmlLoadingMessageId === message.id ? (
+              <div className="html-loading-shell" aria-live="polite">
+                <span className="html-spinner" aria-hidden="true" />
+              </div>
+            ) : message.html && messageViewMode[message.id] === "html" ? (
+              <div
+                className="html-email-body body-fade-in"
+                dangerouslySetInnerHTML={{ __html: readerHtmlChoices[message.id] ?? "" }}
+              />
             ) : (
-              <pre className="thread-body">{message.body}</pre>
+              <pre className="thread-body body-fade-in">{message.body}</pre>
             )}
 
             {message.attachments.length > 0 ? (

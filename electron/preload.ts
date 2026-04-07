@@ -19,6 +19,7 @@ const desktopApi = {
   archiveMessage: (input) => ipcRenderer.invoke("app:archive-message", input),
   getSignature: (accountId) => ipcRenderer.invoke("app:get-signature", accountId),
   setSignature: (input) => ipcRenderer.invoke("app:set-signature", input),
+  reauthAccount: (input) => ipcRenderer.invoke("app:reauth-account", input),
   saveAttachment: (input) => ipcRenderer.invoke("app:save-attachment", input),
   onWorkspaceUpdate: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot);

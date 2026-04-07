@@ -71,7 +71,7 @@ export function SettingsPanel({
   onVerifyAccount
 }: SettingsPanelProps) {
   return (
-    <article className="reader-card">
+    <article className="reader-card settings-panel">
       <header className="pane-header">
         <div>
           <span className="eyebrow">Settings</span>
@@ -90,7 +90,7 @@ export function SettingsPanel({
       </header>
 
       {selectedAccount ? (
-        <>
+        <div className="settings-scroll">
           <section className="settings-grid">
             <div className="settings-card">
               <span className="eyebrow">Account</span>
@@ -187,7 +187,7 @@ export function SettingsPanel({
           <section className="settings-grid">
             <SignatureEditor accountId={selectedAccount.id} onSaved={onSignatureSaved} />
           </section>
-        </>
+        </div>
       ) : (
         <div className="empty-panel">
           <h3>No account selected.</h3>

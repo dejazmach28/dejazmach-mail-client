@@ -10,6 +10,7 @@ import { ComposePanel } from "./components/ComposePanel.js";
 import { MessageList } from "./components/MessageList.js";
 import { MessageReader } from "./components/MessageReader.js";
 import { OnboardingForm } from "./components/OnboardingForm.js";
+import { ReauthModal } from "./components/ReauthModal.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 
@@ -198,6 +199,10 @@ function App() {
   const [loadingMessageBodyId, setLoadingMessageBodyId] = useState<string | null>(null);
   const [verifyingAccountId, setVerifyingAccountId] = useState<string | null>(null);
   const [showAccountSetup, setShowAccountSetup] = useState(false);
+  const [reauthAccountId, setReauthAccountId] = useState<string | null>(null);
+  const [reauthPassword, setReauthPassword] = useState("");
+  const [isReauthenticating, setIsReauthenticating] = useState(false);
+  const [dismissedReauthIds, setDismissedReauthIds] = useState<string[]>([]);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
     accountId: "",
@@ -260,6 +265,17 @@ function App() {
       applyWorkspace(snapshot);
     });
   }, []);
+
+  useEffect(() => {
+    const pendingAccount = workspace.accounts.find(
+      (account) => account.needsReauth && !dismissedReauthIds.includes(account.id)
+    );
+
+    if (pendingAccount && reauthAccountId !== pendingAccount.id) {
+      setReauthAccountId(pendingAccount.id);
+      setReauthPassword("");
+    }
+  }, [dismissedReauthIds, reauthAccountId, workspace.accounts]);
 
   useEffect(() => {
     if (!loadError) {
@@ -335,6 +351,7 @@ function App() {
   const recentActivity = workspace.shellState.transparencyLedger.slice(0, 4);
   const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
   const recentSyncJobs = workspace.syncJobs.slice(0, 3);
+  const reauthAccount = workspace.accounts.find((account) => account.id === reauthAccountId);
 
   const updateAccountForm = <K extends keyof CreateAccountInput>(field: K, value: CreateAccountInput[K]) => {
     setAccountForm((current) => ({
@@ -367,6 +384,12 @@ function App() {
     setSelectedFolderId(nextFolderId);
     setSelectedThreadId(getFirstThreadId(workspace, accountId, nextFolderId));
     setActiveSurface("message");
+  };
+
+  const requestReauth = (accountId: string) => {
+    setDismissedReauthIds((currentIds) => currentIds.filter((id) => id !== accountId));
+    setReauthAccountId(accountId);
+    setReauthPassword("");
   };
 
   const chooseFolder = (folderId: string) => {
@@ -679,6 +702,37 @@ function App() {
     }
   };
 
+  const handleReauthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!window.desktopApi || !reauthAccountId) {
+      setActionError("Re-authentication requires the Electron desktop shell.");
+      return;
+    }
+
+    setIsReauthenticating(true);
+    setActionError(null);
+
+    try {
+      const result = await window.desktopApi.reauthAccount({
+        accountId: reauthAccountId,
+        password: reauthPassword
+      });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+      setDismissedReauthIds((currentIds) => currentIds.filter((id) => id !== reauthAccountId));
+      setReauthAccountId(null);
+      setReauthPassword("");
+      showActionNotice("Password stored. Mailbox sync resumed.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Re-authentication failed.");
+    } finally {
+      setIsReauthenticating(false);
+    }
+  };
+
   return (
     <main className="app-shell">
       {isBooting ? (
@@ -704,6 +758,23 @@ function App() {
             title="Add another mailbox"
           />
         </div>
+      ) : null}
+
+      {reauthAccount ? (
+        <ReauthModal
+          accountAddress={reauthAccount.address}
+          isSubmitting={isReauthenticating}
+          onCancel={() => {
+            setDismissedReauthIds((currentIds) =>
+              currentIds.includes(reauthAccount.id) ? currentIds : [...currentIds, reauthAccount.id]
+            );
+            setReauthAccountId(null);
+            setReauthPassword("");
+          }}
+          onChangePassword={setReauthPassword}
+          onSubmit={handleReauthSubmit}
+          password={reauthPassword}
+        />
       ) : null}
 
       {!hasAccounts ? (
@@ -776,6 +847,7 @@ function App() {
               onCompose={() => openComposer()}
               onSelectAccount={chooseAccount}
               onSelectFolder={chooseFolder}
+              onRequestReauth={requestReauth}
               onShowAddAccount={() => setShowAccountSetup(true)}
               onShowSettings={() => setActiveSurface("settings")}
               selectedAccountId={selectedAccount?.id ?? ""}
@@ -784,7 +856,6 @@ function App() {
 
             <MessageList
               accountId={selectedAccount?.id}
-              accountStatus={selectedAccount?.status}
               folderName={selectedFolder?.name ?? "Folders"}
               messages={visibleMessages}
               onOpenMessage={openMessage}

@@ -1,4 +1,5 @@
-import electron from "electron";
+import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell, type MenuItemConstructorOptions } from "electron";
+app.setName("DejAzmach");
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,6 @@ import { MailService } from "./mailService.js";
 import { getEnvironment, isAllowedNavigation, isAllowedRendererRequest, isSafeExternalUrl } from "./shellPolicy.js";
 import { createCipher } from "./vault.js";
 import { createWindowStateStore } from "./windowState.js";
-const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell } = electron;
 type BrowserWindowInstance = InstanceType<typeof BrowserWindow>;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,7 +71,7 @@ const configureSessionPolicy = () => {
 
 const buildApplicationMenu = () => {
   const isPackaged = app.isPackaged;
-  const template: Electron.MenuItemConstructorOptions[] = [];
+  const template: MenuItemConstructorOptions[] = [];
 
   if (process.platform === "darwin") {
     template.push({
@@ -80,7 +80,7 @@ const buildApplicationMenu = () => {
     });
   }
 
-  const windowSubmenu: Electron.MenuItemConstructorOptions[] =
+  const windowSubmenu: MenuItemConstructorOptions[] =
     process.platform === "darwin"
       ? [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }]
       : [{ role: "minimize" }, { role: "close" }];
@@ -189,14 +189,29 @@ const showIncomingMessageNotifications = (
   }
 };
 
+const isReauthMessage = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error)).toLowerCase().includes("re-authentication");
+
 const syncFolderAndBroadcast = async (
   input: { accountId: string; folderName: string; limit?: number },
   options?: { notify?: boolean; recordActivity?: boolean; broadcast?: boolean }
 ) => {
   const service = requireMailService();
-  const result = await service.syncFolderWithResult(input, createWorkspaceContext(), {
-    recordActivity: options?.recordActivity ?? true
-  });
+  const syncAccount = service.listAccountsForSync().find((candidate) => candidate.id === input.accountId);
+  if (syncAccount?.needsReauth) {
+    throw new Error("Account needs re-authentication. Please re-enter your password.");
+  }
+  let result;
+  try {
+    result = await service.syncFolderWithResult(input, createWorkspaceContext(), {
+      recordActivity: options?.recordActivity ?? true
+    });
+  } catch (error) {
+    if (isReauthMessage(error)) {
+      service.markNeedsReauth(input.accountId);
+    }
+    throw error;
+  }
   const account = service.listAccountsForSync().find((candidate) => candidate.id === input.accountId);
 
   updateUnreadBadge(result.snapshot);
@@ -225,12 +240,16 @@ const syncAllAccountInboxes = async () => {
     let foundNewMessages = false;
 
     for (const account of accounts) {
+      if (account.needsReauth) {
+        continue;
+      }
+
       try {
         const result = await syncFolderAndBroadcast(
           {
             accountId: account.id,
             folderName: "INBOX",
-            limit: 10
+            limit: 20
           },
           {
             notify: true,
@@ -241,6 +260,10 @@ const syncAllAccountInboxes = async () => {
         latestSnapshot = result.snapshot;
         foundNewMessages = foundNewMessages || result.newMessages.length > 0;
       } catch (error) {
+        if (isReauthMessage(error)) {
+          service.markNeedsReauth(account.id);
+          continue;
+        }
         console.error(`Background inbox sync failed for ${account.address}.`, error);
       }
     }
@@ -404,13 +427,13 @@ const loadApplicationUi = async (window: BrowserWindowInstance) => {
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-app.setName("DejAzmach");
-
 if (!gotSingleInstanceLock) {
   app.quit();
 }
 
 if (process.platform === "linux") {
+  app.commandLine.appendSwitch("no-sandbox");
+
   // Older Linux GPU stacks, especially Intel Ivy Bridge, commonly hang or paint a black window in Electron.
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
@@ -424,6 +447,8 @@ if (process.platform === "linux") {
 }
 
 app.whenReady().then(async () => {
+  // The app name controls the Linux safeStorage namespace and the userData path.
+  // Keeping it fixed at "DejAzmach" prevents dev and packaged builds from diverging.
   windowStateStore = createWindowStateStore(app.getPath("userData"));
   buildApplicationMenu();
   configureSessionPolicy();
@@ -522,6 +547,30 @@ app.whenReady().then(async () => {
       return {
         ok: false as const,
         error: getErrorMessage(error)
+      };
+    }
+  });
+
+  ipcMain.handle("app:reauth-account", async (_event, input) => {
+    try {
+      await requireMailService().reauthAccount(input.accountId, input.password, createWorkspaceContext());
+      try {
+        await syncAllAccountInboxes();
+      } catch (error) {
+        if (!isReauthMessage(error)) {
+          throw error;
+        }
+      }
+
+      return {
+        ok: true as const,
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
       };
     }
   });

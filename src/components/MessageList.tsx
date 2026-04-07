@@ -1,11 +1,10 @@
 import { useState } from "react";
-import type { AccountStatus, MailSummary } from "../../shared/contracts.js";
+import type { MailSummary } from "../../shared/contracts.js";
 import type { WorkspaceSnapshot } from "../../shared/contracts.js";
 
 type MessageListProps = {
   accountId?: string;
   folderName: string;
-  accountStatus?: AccountStatus;
   unreadCount?: number;
   messages: MailSummary[];
   searchQuery: string;
@@ -16,18 +15,6 @@ type MessageListProps = {
   onSyncError: (message: string) => void;
   onSearchQueryChange: (value: string) => void;
 };
-
-const accountClassMap: Record<AccountStatus, string> = {
-  online: "status-pill status-pill-active",
-  syncing: "status-pill status-pill-monitoring",
-  attention: "status-pill status-pill-critical"
-};
-
-const trustClassMap = {
-  trusted: "mini-pill mini-pill-neutral",
-  encrypted: "mini-pill mini-pill-success",
-  review: "mini-pill mini-pill-warning"
-} as const;
 
 const getInitials = (value: string) =>
   value
@@ -66,10 +53,6 @@ function MessageRow({ isSelected, message, onOpen }: MessageRowProps) {
           {message.unread ? <span className="unread-dot" aria-hidden="true" /> : null}
         </span>
         <span className="message-preview">{message.preview}</span>
-        <span className="message-meta">
-          <span className="tag">{message.label}</span>
-          <span className={trustClassMap[message.trust]}>{message.trust}</span>
-        </span>
       </span>
     </button>
   );
@@ -78,7 +61,6 @@ function MessageRow({ isSelected, message, onOpen }: MessageRowProps) {
 export function MessageList({
   accountId,
   folderName,
-  accountStatus,
   unreadCount,
   messages,
   searchQuery,
@@ -128,7 +110,7 @@ export function MessageList({
         <div className="pane-actions">
           <button
             aria-label={`Refresh ${folderName}`}
-            className="icon-button"
+            className="refresh-button"
             disabled={isSyncing || !accountId || !folderName}
             onClick={() => {
               void handleSync();
@@ -139,9 +121,6 @@ export function MessageList({
               ↻
             </span>
           </button>
-          <span className={accountStatus ? accountClassMap[accountStatus] : "status-pill status-pill-idle"}>
-            {accountStatus ?? "idle"}
-          </span>
         </div>
       </header>
 

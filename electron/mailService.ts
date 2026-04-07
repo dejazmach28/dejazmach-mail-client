@@ -212,6 +212,7 @@ export class MailService {
         outgoing_port INTEGER NOT NULL,
         outgoing_security TEXT NOT NULL DEFAULT 'ssl_tls',
         outgoing_auth_method TEXT NOT NULL DEFAULT 'auto',
+        needs_reauth INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
 
@@ -311,6 +312,10 @@ export class MailService {
 
     if (!columns.has("outgoing_auth_method")) {
       this.database.exec("ALTER TABLE accounts ADD COLUMN outgoing_auth_method TEXT NOT NULL DEFAULT 'auto';");
+    }
+
+    if (!columns.has("needs_reauth")) {
+      this.database.exec("ALTER TABLE accounts ADD COLUMN needs_reauth INTEGER NOT NULL DEFAULT 0;");
     }
   }
 
@@ -621,11 +626,16 @@ export class MailService {
           status,
           last_sync AS lastSync,
           unread_count AS unreadCount,
-          storage
+          storage,
+          needs_reauth AS needsReauth
         FROM accounts
         ORDER BY created_at ASC
       `)
-      .all() as WorkspaceSnapshot["accounts"];
+      .all()
+      .map((account) => ({
+        ...account,
+        needsReauth: Boolean(account.needsReauth)
+      })) as WorkspaceSnapshot["accounts"];
 
     const folders = this.database
       .prepare(`
@@ -796,6 +806,7 @@ export class MailService {
           accounts.outgoing_port AS outgoingPort,
           accounts.outgoing_security AS outgoingSecurity,
           accounts.outgoing_auth_method AS outgoingAuthMethod,
+          accounts.needs_reauth AS needsReauth,
           account_secrets.encrypted_secret AS encryptedSecret
         FROM accounts
         LEFT JOIN account_secrets ON account_secrets.account_id = accounts.id
@@ -815,6 +826,7 @@ export class MailService {
           outgoingPort: number;
           outgoingSecurity: TransportSecurity;
           outgoingAuthMethod: SmtpAuthMethod;
+          needsReauth: number;
           encryptedSecret?: Buffer;
         }
       | undefined;
@@ -827,8 +839,13 @@ export class MailService {
       throw new Error("Unknown account.");
     }
 
+    if (record.needsReauth) {
+      return null;
+    }
+
     if (!record.encryptedSecret) {
-      throw new Error("No stored secret exists for this account.");
+      this.markNeedsReauth(accountId);
+      return null;
     }
 
     if (!this.input.cipher.isAvailable()) {
@@ -837,15 +854,14 @@ export class MailService {
 
     const decryptedSecret = this.input.cipher.decryptString(record.encryptedSecret);
     if (!decryptedSecret) {
-      this.database
-        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
-        .run("attention", "Re-authentication required", accountId);
+      this.clearStoredPassword(accountId);
+      this.markNeedsReauth(accountId);
       this.addLedgerEntry(
         "Account requires re-authentication",
         `${record.address} could not be decrypted from the local vault and must be set up again.`,
         "critical"
       );
-      throw new Error("Stored account secret could not be decrypted. Re-authenticate this account.");
+      return null;
     }
 
     const secretPayload = JSON.parse(decryptedSecret) as { password?: string };
@@ -857,6 +873,53 @@ export class MailService {
       ...record,
       password: secretPayload.password
     };
+  }
+
+  private requireAuthenticatedAccount(accountId: string) {
+    const account = this.getAccountPassword(accountId);
+
+    if (!account) {
+      throw new Error("Account needs re-authentication. Please re-enter your password.");
+    }
+
+    return account;
+  }
+
+  clearStoredPassword(accountId: string) {
+    this.database.prepare("DELETE FROM account_secrets WHERE account_id = ?").run(accountId);
+  }
+
+  markNeedsReauth(accountId: string) {
+    this.database
+      .prepare("UPDATE accounts SET needs_reauth = 1, status = ?, last_sync = ? WHERE id = ?")
+      .run("attention", "Re-authentication required", accountId);
+  }
+
+  async reauthAccount(accountId: string, password: string, context: WorkspaceContext) {
+    const account = this.getAccountRecord(accountId);
+    if (!account) {
+      throw new Error("Unknown account.");
+    }
+
+    if (!this.input.cipher.isAvailable()) {
+      throw new Error("The operating system vault is unavailable, so this account cannot be stored safely.");
+    }
+
+    const encryptedSecret = this.input.cipher.encryptString(JSON.stringify({ password }));
+    this.database
+      .prepare(
+        `
+          INSERT INTO account_secrets (account_id, encrypted_secret, created_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(account_id) DO UPDATE SET encrypted_secret = excluded.encrypted_secret
+        `
+      )
+      .run(accountId, encryptedSecret, nowIso());
+    this.database
+      .prepare("UPDATE accounts SET needs_reauth = 0, status = ?, last_sync = ? WHERE id = ?")
+      .run("syncing", "Re-authenticating...", accountId);
+
+    return this.getWorkspaceSnapshot(context);
   }
 
   private addLedgerEntry(title: string, detail: string, severity: "info" | "notice" | "critical") {
@@ -1072,7 +1135,7 @@ export class MailService {
 
       const sender = header.fromName || header.fromAddress || "Unknown sender";
       const sentAt = header.date || "Unknown date";
-      const preview = `Header synced from IMAP. ${header.size} bytes on server.`;
+      const preview = header.preview.trim();
       const participants = JSON.stringify([header.fromAddress || sender]);
       const existing = findExisting.get(accountId, header.uid, header.remoteMessageRef) as
         | {
@@ -1176,6 +1239,7 @@ export class MailService {
     accountId: string,
     folders: Array<{ name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>
   ) {
+    console.log(`[folders] received ${folders.length} folders for account ${accountId}`);
     this.database
       .prepare("DELETE FROM folders WHERE account_id = ? AND account_id IS NOT NULL")
       .run(accountId);
@@ -1185,12 +1249,24 @@ export class MailService {
     );
 
     for (const folder of folders) {
+      console.log(`[folders] inserting folder for ${accountId}: ${folder.name}`);
       insertFolder.run(makeId("folder"), accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
     }
 
     if (folders.length === 0) {
       this.ensureFolder(accountId, "Drafts", "drafts", "local");
     }
+
+    const persistedCount = this.database
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM folders
+          WHERE account_id = ?
+        `
+      )
+      .get(accountId) as { count: number };
+    console.log(`[folders] persisted ${persistedCount.count} folders for account ${accountId}`);
   }
 
   createAccount(input: CreateAccountInput, context: WorkspaceContext): WorkspaceSnapshot {
@@ -1316,12 +1392,16 @@ export class MailService {
     return this.database
       .prepare(
         `
-          SELECT id, address
+          SELECT id, address, needs_reauth AS needsReauth
           FROM accounts
           ORDER BY created_at ASC
         `
       )
-      .all() as Array<{ id: string; address: string }>;
+      .all()
+      .map((account) => ({
+        ...account,
+        needsReauth: Boolean(account.needsReauth)
+      })) as Array<{ id: string; address: string; needsReauth: boolean }>;
   }
 
   async syncFolderWithResult(
@@ -1329,7 +1409,7 @@ export class MailService {
     context: WorkspaceContext,
     options?: { recordActivity?: boolean }
   ): Promise<FolderSyncResult> {
-    const account = this.getAccountPassword(input.accountId);
+    const account = this.requireAuthenticatedAccount(input.accountId);
     const folderRecord =
       this.findFolderRecord(input.accountId, input.folderName) ??
       ({
@@ -1347,7 +1427,7 @@ export class MailService {
         incomingPort: account.incomingPort,
         incomingSecurity: account.incomingSecurity,
         folderName: input.folderName,
-        limit: input.limit ?? 50
+        limit: input.limit
       });
 
       const newMessages = this.upsertRemoteHeaders(input.accountId, folderRecord.id, folderRecord.name, summary.headers);
@@ -1389,7 +1469,7 @@ export class MailService {
   }
 
   async verifyAccount(accountId: string, context: WorkspaceContext) {
-    const account = this.getAccountPassword(accountId);
+    const account = this.requireAuthenticatedAccount(accountId);
 
     this.database
       .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
@@ -1459,7 +1539,7 @@ export class MailService {
   }
 
   async sendMessage(input: CreateDraftInput, context: WorkspaceContext) {
-    const account = this.getAccountPassword(input.accountId);
+    const account = this.requireAuthenticatedAccount(input.accountId);
     const subject = input.subject.trim() || "No subject";
     const body = input.body.trim();
     const replyMetadata = this.getReplyMetadata(input.replyToMessageId);
@@ -1592,7 +1672,7 @@ export class MailService {
       throw new Error("This message does not have a remote IMAP body to fetch.");
     }
 
-    const account = this.getAccountPassword(remoteMessage.accountId);
+    const account = this.requireAuthenticatedAccount(remoteMessage.accountId);
 
     try {
       const fetchedContent = await fetchImapMessageBody({
@@ -1645,7 +1725,7 @@ export class MailService {
       return this.getWorkspaceSnapshot(context);
     }
 
-    const account = this.getAccountPassword(input.accountId);
+    const account = this.requireAuthenticatedAccount(input.accountId);
 
     try {
       await deleteImapMessage({
@@ -1679,7 +1759,7 @@ export class MailService {
     }
 
     if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
-      const account = this.getAccountPassword(input.accountId);
+      const account = this.requireAuthenticatedAccount(input.accountId);
 
       try {
         await markImapMessageRead({
@@ -1737,7 +1817,7 @@ export class MailService {
     }
 
     if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
-      const account = this.getAccountPassword(input.accountId);
+      const account = this.requireAuthenticatedAccount(input.accountId);
 
       try {
         await markImapMessageUnread({
@@ -1769,7 +1849,7 @@ export class MailService {
     }
 
     if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
-      const account = this.getAccountPassword(input.accountId);
+      const account = this.requireAuthenticatedAccount(input.accountId);
 
       try {
         await toggleImapMessageFlag({
@@ -1841,7 +1921,7 @@ export class MailService {
       return this.getWorkspaceSnapshot(context);
     }
 
-    const account = this.getAccountPassword(input.accountId);
+    const account = this.requireAuthenticatedAccount(input.accountId);
 
     try {
       await moveImapMessage({

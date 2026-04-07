@@ -264,6 +264,12 @@ dt {
   white-space: nowrap;
 }
 
+.account-copy strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .account-copy span {
   color: rgba(255, 255, 255, 0.6);
   font-size: 0.82rem;
@@ -284,6 +290,52 @@ dt {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.84);
   font-size: 0.78rem;
+}
+
+.account-meta {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.account-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.account-status-online {
+  background: rgba(16, 185, 129, 0.18);
+  color: #a7f3d0;
+}
+
+.account-status-syncing {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+}
+
+.account-status-attention {
+  background: rgba(220, 76, 100, 0.18);
+  color: #fecdd3;
+}
+
+.account-reauth-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  font-size: 0.72rem;
 }
 
 .folder-tile {
@@ -366,22 +418,6 @@ dt {
   font-weight: 700;
 }
 
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: #fff;
-  color: var(--text-muted);
-}
-
-.icon-button:hover {
-  background: var(--gray-200);
-}
-
 .refresh-icon {
   display: inline-flex;
   line-height: 1;
@@ -390,6 +426,20 @@ dt {
 
 .refresh-icon-spinning {
   animation: refresh-spin 1s linear infinite;
+}
+
+.refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.refresh-button:hover {
+  color: var(--blue);
 }
 
 .search-shell {
@@ -581,7 +631,8 @@ dt {
 .reader-pane {
   min-width: 0;
   background: #fff;
-  overflow: hidden;
+  overflow-y: auto;
+  height: 100%;
 }
 
 .reader-card {
@@ -590,6 +641,19 @@ dt {
   height: 100%;
   min-height: 0;
   background: #fff;
+  overflow: hidden;
+}
+
+.settings-panel {
+  min-height: 0;
+}
+
+.settings-scroll {
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  padding-bottom: 40px;
 }
 
 .reader-header {
@@ -625,6 +689,24 @@ dt {
 
 .flag-button-active {
   color: #f4b400;
+}
+
+.reader-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.reader-action-button:hover {
+  background: var(--gray-200);
 }
 
 .more-menu-shell {
@@ -716,6 +798,34 @@ dt {
   line-height: 1.5;
 }
 
+.thread-loading-shell,
+.html-loading-shell {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.html-loading-shell {
+  min-height: 120px;
+  place-items: center;
+}
+
+.skeleton-bar {
+  background: #e5e7eb;
+  border-radius: 4px;
+  margin-bottom: 10px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.html-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(59, 130, 246, 0.18);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: refresh-spin 1s linear infinite;
+}
+
 .html-choice-banner {
   display: flex;
   align-items: center;
@@ -757,6 +867,10 @@ dt {
   line-height: 1.7;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+.body-fade-in {
+  animation: fadeIn 150ms ease-in forwards;
 }
 
 .html-email-body {
@@ -1057,6 +1171,28 @@ dt {
   padding: 28px;
 }
 
+.reauth-card {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+}
+
+.reauth-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.reauth-copy p {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.reauth-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
 .boot-card p {
   margin-top: 12px;
   color: var(--text-muted);
@@ -1243,6 +1379,27 @@ button:disabled {
 
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
   }
 }
 

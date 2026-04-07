@@ -29,7 +29,10 @@ export const createCipher = (): Cipher => ({
     try {
       return safeStorage.decryptString(value);
     } catch (error) {
-      console.warn("Failed to decrypt stored account secret.", error);
+      console.warn(
+        "safeStorage decryption failed — credential may have been encrypted under a different app name. Clearing stored credential.",
+        error
+      );
       return null;
     }
   }

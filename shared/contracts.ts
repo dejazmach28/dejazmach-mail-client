@@ -60,6 +60,7 @@ export type AccountSummary = {
   lastSync: string;
   unreadCount: number;
   storage: string;
+  needsReauth: boolean;
 };
 
 export type FolderSummary = {
@@ -202,6 +203,11 @@ export type SignatureInput = {
   body: string;
 };
 
+export type ReauthAccountInput = {
+  accountId: string;
+  password: string;
+};
+
 export type ActionResult<T> =
   | {
       ok: true;
@@ -230,6 +236,7 @@ export type DesktopApi = {
   archiveMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   getSignature: (accountId: string) => Promise<ActionResult<{ body: string }>>;
   setSignature: (input: SignatureInput) => Promise<ActionResult<{ body: string }>>;
+  reauthAccount: (input: ReauthAccountInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   saveAttachment: (input: SaveAttachmentInput) => Promise<SaveAttachmentResult>;
   onWorkspaceUpdate: (callback: (snapshot: WorkspaceSnapshot) => void) => () => void;
 };

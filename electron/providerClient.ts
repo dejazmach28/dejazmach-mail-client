@@ -29,6 +29,7 @@ export type InboxHeader = {
   flags: string[];
   unread: boolean;
   size: number;
+  preview: string;
 };
 
 export type VerificationSummary = {
@@ -221,7 +222,7 @@ export const parseImapStatusLine = (line: string) => {
 };
 
 export const parseImapListLine = (line: string) => {
-  const match = /^\* LIST \(([^)]*)\)\s+((?:"(?:[^"\\]|\\.)*"|NIL))\s+(.+)$/.exec(line.trim());
+  const match = /^\* LIST \(([^)]*)\)\s+((?:"(?:[^"\\]|\\.)*"|NIL|[^\s]+))\s+(.+)$/.exec(line.trim());
   if (!match) {
     return null;
   }
@@ -248,7 +249,7 @@ export const parseImapListLine = (line: string) => {
   return {
     attributes,
     delimiter: decodeToken(match[2]),
-    name: decodeToken(match[3])
+    name: decodeToken(match[3]).replace(/^"(.*)"$/, "$1")
   };
 };
 
@@ -397,8 +398,60 @@ export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
     date,
     flags,
     unread: !flags.some((flag) => flag.toLowerCase() === "\\seen"),
-    size
+    size,
+    preview: ""
   };
+};
+
+const looksLikeQuotedPrintable = (value: string) => /=([0-9A-Fa-f]{2}|\r?\n)/.test(value);
+
+const looksLikeBase64 = (value: string) => {
+  const compact = value.replace(/\s+/g, "");
+  return compact.length >= 24 && compact.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(compact);
+};
+
+const cleanPreviewText = (value: string) => {
+  let preview = value;
+
+  if (looksLikeQuotedPrintable(preview)) {
+    preview = decodeQuotedPrintableBuffer(preview).toString("utf8");
+  } else if (looksLikeBase64(preview)) {
+    try {
+      preview = Buffer.from(preview.replace(/\s+/g, ""), "base64").toString("utf8");
+    } catch {
+      // Keep the raw preview if base64 decode fails.
+    }
+  }
+
+  return stripHtmlTags(preview)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+};
+
+const parsePreviewFetches = (lines: string[], literals: Buffer[]) => {
+  const previews = new Map<number, string>();
+  let literalIndex = 0;
+
+  for (const line of lines) {
+    const match = /^\* \d+ FETCH \(UID (\d+)\b.*\{(\d+)\}$/.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+
+    const uid = Number(match[1]);
+    const literal = literals[literalIndex];
+    literalIndex += 1;
+
+    if (!literal || !uid) {
+      continue;
+    }
+
+    const preview = cleanPreviewText(literal.toString("utf8"));
+    previews.set(uid, preview);
+  }
+
+  return previews;
 };
 
 const parseImapExists = (lines: string[]) => {
@@ -902,27 +955,58 @@ const logoutImapSocket = async (socket: LineSocket, tag: string) => {
   }
 };
 
-const fetchSelectedFolderHeaders = async (socket: LineSocket, folderName: string, limit = 50) => {
+const getImapFetchRange = (exists: number, limit?: number) => {
+  if (exists <= 0) {
+    return null;
+  }
+
+  if (typeof limit === "number" && limit > 0) {
+    const headerStart = exists > limit ? exists - (limit - 1) : 1;
+    return `${headerStart}:${exists}`;
+  }
+
+  if (exists > 500) {
+    return `${exists - 499}:${exists}`;
+  }
+
+  return "1:*";
+};
+
+const fetchSelectedFolderHeaders = async (socket: LineSocket, folderName: string, limit?: number) => {
   const selectLines = await runImapCommand(socket, "I0002", `SELECT ${escapeImapString(folderName)}`);
   const exists = parseImapExists(selectLines);
-  const headerStart = exists > limit ? exists - (limit - 1) : 1;
+  const fetchRange = getImapFetchRange(exists, limit);
   const headerLines =
-    exists > 0
+    fetchRange
       ? await runImapCommand(
           socket,
           "I0003",
-          `FETCH ${headerStart}:${exists} (UID RFC822.SIZE FLAGS ENVELOPE)`
+          `FETCH ${fetchRange} (UID RFC822.SIZE FLAGS ENVELOPE)`
         )
       : [];
+  const previewResult =
+    fetchRange
+      ? await runImapLiteralCommand(
+          socket,
+          "I0004",
+          `FETCH ${fetchRange} (UID BODY.PEEK[TEXT]<0.200>)`
+        )
+      : { lines: [], literals: [] };
+  const previewsByUid = parsePreviewFetches(previewResult.lines, previewResult.literals);
+  const headers = headerLines
+    .filter((line) => line.startsWith("* ") && line.includes(" FETCH "))
+    .map((line) => parseImapFetchEnvelope(line))
+    .filter((header): header is InboxHeader => Boolean(header))
+    .map((header) => ({
+      ...header,
+      preview: previewsByUid.get(header.uid) ?? ""
+    }))
+    .sort((left, right) => right.sequence - left.sequence);
 
   return {
     selectLines,
     exists,
-    headers: headerLines
-      .filter((line) => line.startsWith("* ") && line.includes(" FETCH "))
-      .map((line) => parseImapFetchEnvelope(line))
-      .filter((header): header is InboxHeader => Boolean(header))
-      .sort((left, right) => right.sequence - left.sequence)
+    headers
   };
 };
 
@@ -1014,6 +1098,11 @@ const connectImap = async (input: AccountConnectionInput) => {
     const loginLines = ["I0001 OK LOGIN completed"];
     const statusLines = await runImapCommand(socket, "A0002", "STATUS INBOX (MESSAGES UNSEEN)");
     const folderLines = await runImapCommand(socket, "A0003", 'LIST "" "*"');
+    console.log("[imap] LIST command sent:", 'LIST "" "*"');
+    console.log("[imap] raw LIST response:", folderLines);
+    for (const line of folderLines) {
+      console.log("[imap] LIST line:", line);
+    }
     const { headers } = await fetchSelectedFolderHeaders(socket, "INBOX");
     const statusLine = statusLines.find((line) => line.startsWith("* STATUS"));
     const parsedStatus = statusLine ? parseImapStatusLine(statusLine) : {};
@@ -1025,6 +1114,10 @@ const connectImap = async (input: AccountConnectionInput) => {
         name: folder.name,
         kind: classifyImapFolder(folder.name, folder.attributes)
       }));
+    console.log(
+      "[imap] parsed folders:",
+      folders.map((folder) => folder.name)
+    );
 
     return {
       greeting,
@@ -1126,7 +1219,7 @@ export const fetchImapFolderHeaders = async (input: SyncFolderInput) => {
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    const { selectLines, headers } = await fetchSelectedFolderHeaders(socket, input.folderName, input.limit ?? 50);
+    const { selectLines, headers } = await fetchSelectedFolderHeaders(socket, input.folderName, input.limit);
     const existsLine = selectLines.find((line) => /^\* \d+ EXISTS$/.test(line.trim()));
     const unseenLine = selectLines.find((line) => /^\* OK \[UNSEEN \d+\]/.test(line.trim()));
 
