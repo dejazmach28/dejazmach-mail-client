@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  Attachment,
   CreateAccountInput,
   CreateDraftInput,
   FetchMessageBodyInput,
@@ -11,6 +12,7 @@ import type {
   RuntimeEnvironment,
   SyncFolderInput,
   SmtpAuthMethod,
+  ToggleFlagInput,
   TransportSecurity,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
@@ -21,14 +23,17 @@ import {
   fetchImapFolderHeaders,
   fetchImapMessageBody,
   markImapMessageRead,
+  markImapMessageUnread,
+  moveImapMessage,
   sendPlainTextMessage,
+  toggleImapMessageFlag,
   verifyAccountConnection
 } from "./providerClient.js";
 
 type Cipher = {
   isAvailable: () => boolean;
   encryptString: (value: string) => Buffer;
-  decryptString: (value: Buffer) => string;
+  decryptString: (value: Buffer) => string | null;
 };
 
 type WorkspaceContext = {
@@ -58,7 +63,10 @@ type MessageRow = {
   trust: "trusted" | "encrypted" | "review";
   sent_at: string;
   body: string;
+  html_body?: string | null;
+  attachments_json?: string | null;
   verified: number;
+  flagged?: number;
   content_mode: MessageContentMode;
   remote_message_ref?: string | null;
   remote_uid?: number | null;
@@ -70,6 +78,17 @@ type MessageRow = {
 type ReplyMetadata = {
   inReplyTo?: string;
   references: string[];
+};
+
+type SyncedMessageNotice = {
+  messageId: string;
+  sender: string;
+  subject: string;
+};
+
+type FolderSyncResult = {
+  snapshot: WorkspaceSnapshot;
+  newMessages: SyncedMessageNotice[];
 };
 
 const nowIso = () => new Date().toISOString();
@@ -169,6 +188,7 @@ export class MailService {
     this.database.exec("PRAGMA foreign_keys = ON;");
     this.createSchema();
     this.ensureReferenceData();
+    this.migrateLegacyGlobalFolders();
     this.purgeLegacySeedDataIfPresent();
     this.purgeLegacyGlobalFoldersIfUnused();
   }
@@ -234,6 +254,8 @@ export class MailService {
         trust TEXT NOT NULL,
         sent_at TEXT NOT NULL,
         body TEXT NOT NULL,
+        html_body TEXT,
+        attachments_json TEXT,
         verified INTEGER NOT NULL,
         content_mode TEXT NOT NULL DEFAULT 'plain',
         remote_message_ref TEXT,
@@ -261,6 +283,12 @@ export class MailService {
         occurred_at TEXT NOT NULL,
         severity TEXT NOT NULL,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS signatures (
+        account_id TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       );
     `);
     this.ensureAccountTransportColumns();
@@ -304,6 +332,18 @@ export class MailService {
     const columns = new Set(
       (this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((column) => column.name)
     );
+
+    if (!columns.has("html_body")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN html_body TEXT;");
+    }
+
+    if (!columns.has("attachments_json")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN attachments_json TEXT;");
+    }
+
+    if (!columns.has("flagged")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0;");
+    }
 
     if (!columns.has("remote_message_ref")) {
       this.database.exec("ALTER TABLE messages ADD COLUMN remote_message_ref TEXT;");
@@ -354,11 +394,11 @@ export class MailService {
           sort_order INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          account_id TEXT NOT NULL,
-          folder_id TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        folder_id TEXT NOT NULL,
           sender TEXT NOT NULL,
           address TEXT NOT NULL,
           subject TEXT NOT NULL,
@@ -366,11 +406,12 @@ export class MailService {
           label TEXT NOT NULL,
           time TEXT NOT NULL,
           unread INTEGER NOT NULL,
-          trust TEXT NOT NULL,
-          sent_at TEXT NOT NULL,
-          body TEXT NOT NULL,
-          verified INTEGER NOT NULL,
-          content_mode TEXT NOT NULL DEFAULT 'plain',
+        trust TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        body TEXT NOT NULL,
+        html_body TEXT,
+        verified INTEGER NOT NULL,
+        content_mode TEXT NOT NULL DEFAULT 'plain',
           remote_message_ref TEXT,
           remote_uid INTEGER,
           remote_sequence INTEGER,
@@ -395,14 +436,45 @@ export class MailService {
           severity TEXT NOT NULL DEFAULT 'info',
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS signatures (
+          account_id TEXT PRIMARY KEY,
+          body TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
       `);
 
       const accountRows = this.database.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>;
       for (const account of accountRows) {
-        this.ensureFolder(account.id, "Inbox", "inbox", "local");
-        this.ensureFolder(account.id, "Sent", "sent", "local");
-        this.ensureFolder(account.id, "Drafts", "drafts", "local");
-        this.ensureFolder(account.id, "Trash", "trash", "local");
+        const folderCount = this.database
+          .prepare(
+            `
+              SELECT COUNT(*) AS count
+              FROM folders
+              WHERE account_id = ?
+            `
+          )
+          .get(account.id) as { count: number };
+
+        if (folderCount.count > 0) {
+          continue;
+        }
+
+        const hasDraftsFolder = this.database
+          .prepare(
+            `
+              SELECT id
+              FROM folders
+              WHERE account_id = ?
+                AND (kind = 'drafts' OR LOWER(name) = 'drafts')
+              LIMIT 1
+            `
+          )
+          .get(account.id) as { id: string } | undefined;
+
+        if (!hasDraftsFolder) {
+          this.ensureFolder(account.id, "Drafts", "drafts", "local");
+        }
       }
     } catch (error) {
       console.error("Failed to ensure DejAzmach reference data.", error);
@@ -449,6 +521,95 @@ export class MailService {
     }
   }
 
+  private migrateLegacyGlobalFolders() {
+    const legacyFolders = this.database
+      .prepare(
+        `
+          SELECT id
+          FROM folders
+          WHERE account_id IS NULL
+        `
+      )
+      .all() as Array<{ id: string }>;
+
+    if (legacyFolders.length === 0) {
+      return;
+    }
+
+    const accounts = this.database.prepare("SELECT id FROM accounts ORDER BY created_at ASC").all() as Array<{ id: string }>;
+    const updateFolderAccount = this.database.prepare("UPDATE folders SET account_id = ? WHERE id = ?");
+    const folderMessageAccountIds = this.database.prepare(
+      `
+        SELECT DISTINCT account_id AS accountId
+        FROM messages
+        WHERE folder_id = ?
+          AND account_id IS NOT NULL
+      `
+    );
+
+    for (const folder of legacyFolders) {
+      const messageAccounts = folderMessageAccountIds.all(folder.id) as Array<{ accountId: string }>;
+      const uniqueAccountIds = Array.from(new Set(messageAccounts.map((entry) => entry.accountId).filter(Boolean)));
+
+      if (uniqueAccountIds.length === 1) {
+        updateFolderAccount.run(uniqueAccountIds[0], folder.id);
+        continue;
+      }
+
+      if (uniqueAccountIds.length === 0 && accounts.length === 1) {
+        updateFolderAccount.run(accounts[0].id, folder.id);
+      }
+    }
+
+    for (const account of accounts) {
+      this.reconcileLocalFolders(account.id);
+    }
+  }
+
+  private reconcileLocalFolders(accountId: string) {
+    const localFolders = this.database
+      .prepare(
+        `
+          SELECT id, name, kind
+          FROM folders
+          WHERE account_id = ? AND source = 'local'
+        `
+      )
+      .all(accountId) as Array<{ id: string; name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>;
+    const remoteFolders = this.database
+      .prepare(
+        `
+          SELECT id, name, kind
+          FROM folders
+          WHERE account_id = ? AND source = 'remote'
+        `
+      )
+      .all(accountId) as Array<{ id: string; name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>;
+
+    if (localFolders.length === 0 || remoteFolders.length === 0) {
+      return;
+    }
+
+    const preferredRemoteByKind = new Map(remoteFolders.map((folder) => [folder.kind, folder]));
+    const updateMessageFolder = this.database.prepare(
+      "UPDATE messages SET folder_id = ?, label = ?, remote_folder_name = COALESCE(remote_folder_name, ?) WHERE folder_id = ?"
+    );
+    const deleteFolder = this.database.prepare("DELETE FROM folders WHERE id = ?");
+
+    for (const localFolder of localFolders) {
+      const remoteMatch =
+        remoteFolders.find((folder) => folder.name.toLowerCase() === localFolder.name.toLowerCase()) ??
+        preferredRemoteByKind.get(localFolder.kind);
+
+      if (!remoteMatch) {
+        continue;
+      }
+
+      updateMessageFolder.run(remoteMatch.id, remoteMatch.name, remoteMatch.name, localFolder.id);
+      deleteFolder.run(localFolder.id);
+    }
+  }
+
   getWorkspaceSnapshot(context: WorkspaceContext): WorkspaceSnapshot {
     const accounts = this.database
       .prepare(`
@@ -472,7 +633,7 @@ export class MailService {
           folders.id,
           folders.account_id AS accountId,
           folders.name,
-          COUNT(messages.id) AS count,
+          COALESCE(SUM(CASE WHEN messages.unread = 1 THEN 1 ELSE 0 END), 0) AS count,
           folders.kind
         FROM folders
         LEFT JOIN messages
@@ -496,6 +657,7 @@ export class MailService {
           label,
           time,
           unread,
+          flagged,
           trust
         FROM messages
         ORDER BY created_at DESC
@@ -503,7 +665,8 @@ export class MailService {
       .all()
       .map((row) => ({
         ...row,
-        unread: Boolean(row.unread)
+        unread: Boolean(row.unread),
+        flagged: Boolean(row.flagged)
       })) as WorkspaceSnapshot["messages"];
 
     const messageRows = this.database
@@ -540,6 +703,8 @@ export class MailService {
           address: message.address,
           sentAt: message.sent_at,
           body: message.body,
+          html: message.html_body ?? null,
+          attachments: message.attachments_json ? (JSON.parse(message.attachments_json) as Attachment[]) : [],
           verified: Boolean(message.verified),
           contentMode: message.content_mode
         }))
@@ -594,9 +759,9 @@ export class MailService {
           },
           {
             label: "Message rendering",
-            value: "Plain text or blocked HTML",
+            value: "Plain text by default",
             status: "active",
-            detail: "The client refuses rich HTML rendering until a sanitizer pipeline is deliberately implemented."
+            detail: "Plain text is available immediately, and HTML can be revealed only after client-side sanitization."
           },
           {
             label: "Local persistence",
@@ -670,7 +835,20 @@ export class MailService {
       throw new Error("The operating system vault is unavailable, so this account cannot be verified safely.");
     }
 
-    const secretPayload = JSON.parse(this.input.cipher.decryptString(record.encryptedSecret)) as { password?: string };
+    const decryptedSecret = this.input.cipher.decryptString(record.encryptedSecret);
+    if (!decryptedSecret) {
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("attention", "Re-authentication required", accountId);
+      this.addLedgerEntry(
+        "Account requires re-authentication",
+        `${record.address} could not be decrypted from the local vault and must be set up again.`,
+        "critical"
+      );
+      throw new Error("Stored account secret could not be decrypted. Re-authenticate this account.");
+    }
+
+    const secretPayload = JSON.parse(decryptedSecret) as { password?: string };
     if (!secretPayload.password) {
       throw new Error("Stored account secret is invalid.");
     }
@@ -792,6 +970,13 @@ export class MailService {
     this.updateAccountUnreadCount(accountId);
   }
 
+  private moveLocalMessage(messageId: string, accountId: string, targetFolderId: string, targetFolderName: string) {
+    this.database
+      .prepare("UPDATE messages SET folder_id = ?, label = ?, remote_folder_name = COALESCE(remote_folder_name, ?) WHERE id = ?")
+      .run(targetFolderId, targetFolderName, targetFolderName, messageId);
+    this.updateAccountUnreadCount(accountId);
+  }
+
   private getRemoteMessageRecord(accountId: string, messageId: string) {
     return this.database
       .prepare(
@@ -816,7 +1001,8 @@ export class MailService {
           remoteMessageRef?: string | null;
           remoteUid?: number | null;
           remoteSequence?: number | null;
-          remoteFolderName?: string | null;
+            remoteFolderName?: string | null;
+            flagged?: number | null;
           contentMode: MessageContentMode;
         }
       | undefined;
@@ -838,6 +1024,7 @@ export class MailService {
     folderName: string,
     headers: InboxHeader[]
   ) {
+    const newMessages: SyncedMessageNotice[] = [];
     const seenRemoteRefs = new Set<string>();
     const findExisting = this.database.prepare(
       `
@@ -856,9 +1043,9 @@ export class MailService {
     const insertMessage = this.database.prepare(`
       INSERT INTO messages (
         id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-        unread, trust, sent_at, body, verified, content_mode, remote_message_ref, remote_uid, remote_sequence,
+        unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, remote_message_ref, remote_uid, remote_sequence,
         remote_folder_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateMessage = this.database.prepare(`
       UPDATE messages
@@ -920,9 +1107,10 @@ export class MailService {
 
       const createdAt = nowIso();
       const threadId = makeId("thread");
+      const messageId = makeId("message");
       insertThread.run(threadId, header.subject, folderName, participants, createdAt);
       insertMessage.run(
-        makeId("message"),
+        messageId,
         threadId,
         accountId,
         folderId,
@@ -936,6 +1124,8 @@ export class MailService {
         "review",
         sentAt,
         "Message body not loaded yet. Open this message to fetch the full RFC822 body from IMAP.",
+        null,
+        "[]",
         1,
         "remote-pending",
         header.remoteMessageRef,
@@ -944,6 +1134,11 @@ export class MailService {
         folderName,
         createdAt
       );
+      newMessages.push({
+        messageId,
+        sender,
+        subject: header.subject
+      });
     }
 
     if (seenRemoteRefs.size > 0) {
@@ -974,48 +1169,27 @@ export class MailService {
 
     this.pruneOrphanThreads();
     this.updateAccountUnreadCount(accountId);
+    return newMessages;
   }
 
   private replaceRemoteFolders(
     accountId: string,
     folders: Array<{ name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>
   ) {
-    const existingFolders = this.database
-      .prepare(
-        `
-          SELECT id, name, kind
-          FROM folders
-          WHERE account_id = ? AND source = 'remote'
-        `
-      )
-      .all(accountId) as Array<{ id: string; name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>;
-    const existingByKey = new Map(existingFolders.map((folder) => [`${folder.name}::${folder.kind}`, folder]));
-    const seenKeys = new Set<string>();
+    this.database
+      .prepare("DELETE FROM folders WHERE account_id = ? AND account_id IS NOT NULL")
+      .run(accountId);
+
     const insertFolder = this.database.prepare(
       "INSERT INTO folders (id, account_id, name, kind, source, sort_order) VALUES (?, ?, ?, ?, 'remote', ?)"
     );
-    const updateFolder = this.database.prepare(
-      "UPDATE folders SET sort_order = ? WHERE id = ?"
-    );
 
     for (const folder of folders) {
-      const key = `${folder.name}::${folder.kind}`;
-      seenKeys.add(key);
-      const existing = existingByKey.get(key);
-
-      if (existing) {
-        updateFolder.run(folderSortOrder(folder.kind, folder.name), existing.id);
-        continue;
-      }
-
       insertFolder.run(makeId("folder"), accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
     }
 
-    for (const folder of existingFolders) {
-      const key = `${folder.name}::${folder.kind}`;
-      if (!seenKeys.has(key)) {
-        this.database.prepare("DELETE FROM folders WHERE id = ?").run(folder.id);
-      }
+    if (folders.length === 0) {
+      this.ensureFolder(accountId, "Drafts", "drafts", "local");
     }
   }
 
@@ -1089,18 +1263,18 @@ export class MailService {
       throw new Error("Cannot create a draft for an unknown account.");
     }
 
-    const draftsFolderId = this.ensureFolder(input.accountId, "Drafts", "drafts", "local");
+    const draftsFolderId = this.findFolderId(input.accountId, "drafts") || this.ensureFolder(input.accountId, "Drafts", "drafts", "local");
 
     this.database
       .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(threadId, subject, "Draft", JSON.stringify([account.address, input.to]), createdAt);
+      .run(threadId, subject, "Draft", JSON.stringify([account.address, input.to, input.cc ?? ""]), createdAt);
 
     this.database
       .prepare(`
         INSERT INTO messages (
           id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, verified, content_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         makeId("message"),
@@ -1116,7 +1290,9 @@ export class MailService {
         0,
         "trusted",
         `Today, ${displayTime()}`,
-        `To: ${input.to || "Not specified"}\n\n${body || "Empty draft"}`,
+        `To: ${input.to || "Not specified"}${input.cc?.trim() ? `\nCc: ${input.cc.trim()}` : ""}\n\n${body || "Empty draft"}`,
+        null,
+        "[]",
         1,
         "plain",
         createdAt
@@ -1134,6 +1310,82 @@ export class MailService {
       );
 
     return this.getWorkspaceSnapshot(context);
+  }
+
+  listAccountsForSync() {
+    return this.database
+      .prepare(
+        `
+          SELECT id, address
+          FROM accounts
+          ORDER BY created_at ASC
+        `
+      )
+      .all() as Array<{ id: string; address: string }>;
+  }
+
+  async syncFolderWithResult(
+    input: SyncFolderInput & { limit?: number },
+    context: WorkspaceContext,
+    options?: { recordActivity?: boolean }
+  ): Promise<FolderSyncResult> {
+    const account = this.getAccountPassword(input.accountId);
+    const folderRecord =
+      this.findFolderRecord(input.accountId, input.folderName) ??
+      ({
+        id: this.ensureFolder(input.accountId, input.folderName, "custom", "remote"),
+        name: input.folderName,
+        kind: "custom" as const
+      });
+    const recordActivity = options?.recordActivity ?? true;
+
+    try {
+      const summary = await fetchImapFolderHeaders({
+        username: account.username,
+        password: account.password,
+        incomingServer: account.incomingServer,
+        incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
+        folderName: input.folderName,
+        limit: input.limit ?? 50
+      });
+
+      const newMessages = this.upsertRemoteHeaders(input.accountId, folderRecord.id, folderRecord.name, summary.headers);
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("online", `Synced ${displayTime()}`, input.accountId);
+
+      if (recordActivity) {
+        this.addSyncJob(`Folder sync for ${account.address}`, `${input.folderName} refreshed from IMAP.`, "complete");
+        this.addLedgerEntry(
+          "Folder sync completed",
+          `${account.address} refreshed ${input.folderName} and stored ${summary.headers.length} headers locally.`,
+          "info"
+        );
+      } else if (newMessages.length > 0) {
+        this.addLedgerEntry(
+          "Background inbox sync completed",
+          `${account.address} received ${newMessages.length} new message${newMessages.length === 1 ? "" : "s"} in ${input.folderName}.`,
+          "notice"
+        );
+      }
+
+      return {
+        snapshot: this.getWorkspaceSnapshot(context),
+        newMessages
+      };
+    } catch (error) {
+      const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+      this.database
+        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
+        .run("attention", `Sync failed ${displayTime()}`, input.accountId);
+
+      if (recordActivity) {
+        this.addLedgerEntry("Folder sync failed", `${account.address}: ${message}`, "critical");
+      }
+
+      throw new Error(message);
+    }
   }
 
   async verifyAccount(accountId: string, context: WorkspaceContext) {
@@ -1216,7 +1468,7 @@ export class MailService {
       throw new Error("Recipient address is required before sending.");
     }
 
-    const sentFolderId = this.ensureFolder(input.accountId, "Sent", "sent", "local");
+    const sentFolderId = this.findFolderId(input.accountId, "sent") || this.ensureFolder(input.accountId, "Sent", "sent", "local");
 
     try {
       await sendPlainTextMessage({
@@ -1229,6 +1481,7 @@ export class MailService {
         outgoingSecurity: account.outgoingSecurity,
         outgoingAuthMethod: account.outgoingAuthMethod,
         to: input.to.trim(),
+        cc: input.cc?.trim(),
         subject,
         body,
         inReplyTo: replyMetadata.inReplyTo,
@@ -1240,15 +1493,15 @@ export class MailService {
 
       this.database
         .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim()]), createdAt);
+        .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim(), input.cc?.trim() ?? ""]), createdAt);
 
       this.database
-        .prepare(`
-          INSERT INTO messages (
-            id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-            unread, trust, sent_at, body, verified, content_mode, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
+      .prepare(`
+        INSERT INTO messages (
+          id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
         .run(
           makeId("message"),
           threadId,
@@ -1263,7 +1516,9 @@ export class MailService {
           0,
           "encrypted",
           `Today, ${displayTime()}`,
-          `To: ${input.to.trim()}\n\n${body || "Empty message"}`,
+          `To: ${input.to.trim()}${input.cc?.trim() ? `\nCc: ${input.cc.trim()}` : ""}\n\n${body || "Empty message"}`,
+          null,
+          "[]",
           1,
           "plain",
           createdAt
@@ -1300,46 +1555,8 @@ export class MailService {
   }
 
   async syncFolder(input: SyncFolderInput, context: WorkspaceContext) {
-    const account = this.getAccountPassword(input.accountId);
-    const folderRecord =
-      this.findFolderRecord(input.accountId, input.folderName) ??
-      ({
-        id: this.ensureFolder(input.accountId, input.folderName, "custom", "remote"),
-        name: input.folderName,
-        kind: "custom" as const
-      });
-
-    try {
-      const summary = await fetchImapFolderHeaders({
-        username: account.username,
-        password: account.password,
-        incomingServer: account.incomingServer,
-        incomingPort: account.incomingPort,
-        incomingSecurity: account.incomingSecurity,
-        folderName: input.folderName,
-        limit: 50
-      });
-
-      this.upsertRemoteHeaders(input.accountId, folderRecord.id, folderRecord.name, summary.headers);
-      this.database
-        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
-        .run("online", `Synced ${displayTime()}`, input.accountId);
-      this.addSyncJob(`Folder sync for ${account.address}`, `${input.folderName} refreshed from IMAP.`, "complete");
-      this.addLedgerEntry(
-        "Folder sync completed",
-        `${account.address} refreshed ${input.folderName} and stored ${summary.headers.length} headers locally.`,
-        "info"
-      );
-
-      return this.getWorkspaceSnapshot(context);
-    } catch (error) {
-      const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
-      this.database
-        .prepare("UPDATE accounts SET status = ?, last_sync = ? WHERE id = ?")
-        .run("attention", `Sync failed ${displayTime()}`, input.accountId);
-      this.addLedgerEntry("Folder sync failed", `${account.address}: ${message}`, "critical");
-      throw new Error(message);
-    }
+    const result = await this.syncFolderWithResult(input, context, { recordActivity: true });
+    return result.snapshot;
   }
 
   async fetchMessageBody(input: FetchMessageBodyInput, _context: WorkspaceContext): Promise<FetchMessageBodyResult> {
@@ -1355,12 +1572,19 @@ export class MailService {
 
     if (remoteMessage.contentMode !== "remote-pending") {
       const currentBody = this.database
-        .prepare("SELECT body FROM messages WHERE id = ?")
-        .get(input.messageId) as { body: string } | undefined;
+        .prepare("SELECT body, html_body AS html, attachments_json AS attachmentsJson FROM messages WHERE id = ?")
+        .get(input.messageId) as
+        | {
+            body: string;
+            html?: string | null;
+            attachmentsJson?: string | null;
+          }
+        | undefined;
 
       return {
         body: currentBody?.body ?? "",
-        html: null
+        html: currentBody?.html ?? null,
+        attachments: currentBody?.attachmentsJson ? (JSON.parse(currentBody.attachmentsJson) as Attachment[]) : []
       };
     }
 
@@ -1380,11 +1604,11 @@ export class MailService {
         folderName: remoteMessage.remoteFolderName,
         uid: remoteMessage.remoteUid
       });
-      const contentMode: MessageContentMode = fetchedContent.html ? "html-blocked" : "plain";
+      const contentMode: MessageContentMode = "plain";
 
       this.database
-        .prepare("UPDATE messages SET body = ?, content_mode = ? WHERE id = ?")
-        .run(fetchedContent.body, contentMode, input.messageId);
+        .prepare("UPDATE messages SET body = ?, html_body = ?, attachments_json = ?, content_mode = ? WHERE id = ?")
+        .run(fetchedContent.body, fetchedContent.html, JSON.stringify(fetchedContent.attachments), contentMode, input.messageId);
 
       this.addLedgerEntry(
         "Message body fetched from IMAP",
@@ -1477,6 +1701,195 @@ export class MailService {
     this.database.prepare("UPDATE messages SET unread = 0 WHERE id = ?").run(input.messageId);
     this.updateAccountUnreadCount(input.accountId);
     return this.getWorkspaceSnapshot(context);
+  }
+
+  getSignature(accountId: string) {
+    const signature = this.database
+      .prepare("SELECT body FROM signatures WHERE account_id = ? LIMIT 1")
+      .get(accountId) as { body: string } | undefined;
+
+    return {
+      body: signature?.body ?? ""
+    };
+  }
+
+  setSignature(accountId: string, body: string) {
+    this.database
+      .prepare(
+        `
+          INSERT INTO signatures (account_id, body, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(account_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at
+        `
+      )
+      .run(accountId, body, Date.now());
+
+    return {
+      body
+    };
+  }
+
+  async markUnread(input: MessageMutationInput, context: WorkspaceContext) {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
+      const account = this.getAccountPassword(input.accountId);
+
+      try {
+        await markImapMessageUnread({
+          username: account.username,
+          password: account.password,
+          incomingServer: account.incomingServer,
+          incomingPort: account.incomingPort,
+          incomingSecurity: account.incomingSecurity,
+          folderName: remoteMessage.remoteFolderName,
+          uid: remoteMessage.remoteUid
+        });
+      } catch (error) {
+        const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+        this.addLedgerEntry("Mark unread failed", `${account.address}: ${message}`, "critical");
+        throw new Error(message);
+      }
+    }
+
+    this.database.prepare("UPDATE messages SET unread = 1 WHERE id = ?").run(input.messageId);
+    this.updateAccountUnreadCount(input.accountId);
+    return this.getWorkspaceSnapshot(context);
+  }
+
+  async toggleFlag(input: ToggleFlagInput, context: WorkspaceContext) {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
+      const account = this.getAccountPassword(input.accountId);
+
+      try {
+        await toggleImapMessageFlag({
+          username: account.username,
+          password: account.password,
+          incomingServer: account.incomingServer,
+          incomingPort: account.incomingPort,
+          incomingSecurity: account.incomingSecurity,
+          folderName: remoteMessage.remoteFolderName,
+          uid: remoteMessage.remoteUid,
+          flagged: input.flagged
+        });
+      } catch (error) {
+        const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+        this.addLedgerEntry("Flag update failed", `${account.address}: ${message}`, "critical");
+        throw new Error(message);
+      }
+    }
+
+    this.database.prepare("UPDATE messages SET flagged = ? WHERE id = ?").run(input.flagged ? 1 : 0, input.messageId);
+    return this.getWorkspaceSnapshot(context);
+  }
+
+  async markSpam(input: MessageMutationInput, context: WorkspaceContext) {
+    const spamFolder = this.database
+      .prepare(
+        `
+          SELECT name
+          FROM folders
+          WHERE account_id = ?
+            AND LOWER(name) IN ('spam', 'junk', 'junk email')
+          ORDER BY sort_order ASC
+          LIMIT 1
+        `
+      )
+      .get(input.accountId) as { name: string } | undefined;
+
+    if (!spamFolder) {
+      throw new Error("No spam folder is available for this account.");
+    }
+
+    return this.moveMessage(
+      {
+        accountId: input.accountId,
+        messageId: input.messageId,
+        targetFolderName: spamFolder.name
+      },
+      context
+    );
+  }
+
+  async moveMessage(input: { accountId: string; messageId: string; targetFolderName: string }, context: WorkspaceContext) {
+    const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
+
+    if (!remoteMessage) {
+      throw new Error("Unknown message.");
+    }
+
+    const targetFolder =
+      this.findFolderRecord(input.accountId, input.targetFolderName) ??
+      ({
+        id: this.ensureFolder(input.accountId, input.targetFolderName, "custom", "remote"),
+        name: input.targetFolderName,
+        kind: "custom" as const
+      });
+
+    if (!remoteMessage.remoteUid || !remoteMessage.remoteFolderName) {
+      this.moveLocalMessage(input.messageId, input.accountId, targetFolder.id, targetFolder.name);
+      return this.getWorkspaceSnapshot(context);
+    }
+
+    const account = this.getAccountPassword(input.accountId);
+
+    try {
+      await moveImapMessage({
+        username: account.username,
+        password: account.password,
+        incomingServer: account.incomingServer,
+        incomingPort: account.incomingPort,
+        incomingSecurity: account.incomingSecurity,
+        folderName: remoteMessage.remoteFolderName,
+        uid: remoteMessage.remoteUid,
+        targetFolderName: targetFolder.name
+      });
+      this.moveLocalMessage(input.messageId, input.accountId, targetFolder.id, targetFolder.name);
+      this.addLedgerEntry("Message moved", `${account.address} moved a message to ${targetFolder.name}.`, "info");
+      return this.getWorkspaceSnapshot(context);
+    } catch (error) {
+      const message = describeTransportError(error, "IMAP", account.incomingServer, account.incomingPort);
+      this.addLedgerEntry("Message move failed", `${account.address}: ${message}`, "critical");
+      throw new Error(message);
+    }
+  }
+
+  async archiveMessage(input: MessageMutationInput, context: WorkspaceContext) {
+    const archiveFolder = this.database
+      .prepare(
+        `
+          SELECT name
+          FROM folders
+          WHERE account_id = ?
+            AND LOWER(name) IN ('archive', 'all mail', '[gmail]/all mail')
+          ORDER BY sort_order ASC
+          LIMIT 1
+        `
+      )
+      .get(input.accountId) as { name: string } | undefined;
+
+    if (!archiveFolder) {
+      throw new Error("No archive folder is available for this account.");
+    }
+
+    return this.moveMessage(
+      {
+        accountId: input.accountId,
+        messageId: input.messageId,
+        targetFolderName: archiveFolder.name
+      },
+      context
+    );
   }
 
   close() {

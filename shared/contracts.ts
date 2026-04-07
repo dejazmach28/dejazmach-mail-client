@@ -10,7 +10,7 @@ export type LedgerSeverity = "info" | "notice" | "critical";
 
 export type RuntimeEnvironment = "development" | "production";
 
-export type MessageContentMode = "plain" | "html-blocked" | "remote-pending";
+export type MessageContentMode = "plain" | "remote-pending";
 
 export type TransportSecurity = "ssl_tls" | "starttls" | "plain";
 
@@ -81,7 +81,15 @@ export type MailSummary = {
   label: string;
   time: string;
   unread?: boolean;
+  flagged?: boolean;
   trust: MailTrust;
+};
+
+export type Attachment = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  data: string;
 };
 
 export type ThreadMessage = {
@@ -90,6 +98,8 @@ export type ThreadMessage = {
   address: string;
   sentAt: string;
   body: string;
+  html: string | null;
+  attachments: Attachment[];
   verified: boolean;
   contentMode: MessageContentMode;
 };
@@ -137,6 +147,7 @@ export type CreateAccountInput = {
 export type CreateDraftInput = {
   accountId: string;
   to: string;
+  cc?: string;
   subject: string;
   body: string;
   replyToMessageId?: string;
@@ -150,6 +161,7 @@ export type FetchMessageBodyInput = {
 export type FetchMessageBodyResult = {
   body: string;
   html: string | null;
+  attachments: Attachment[];
 };
 
 export type SyncFolderInput = {
@@ -160,6 +172,34 @@ export type SyncFolderInput = {
 export type MessageMutationInput = {
   accountId: string;
   messageId: string;
+};
+
+export type MoveMessageInput = {
+  accountId: string;
+  messageId: string;
+  targetFolderName: string;
+};
+
+export type ToggleFlagInput = {
+  accountId: string;
+  messageId: string;
+  flagged: boolean;
+};
+
+export type SaveAttachmentInput = {
+  filename: string;
+  data: string;
+  mimeType: string;
+};
+
+export type SaveAttachmentResult = {
+  saved: boolean;
+  path: string | null;
+};
+
+export type SignatureInput = {
+  accountId: string;
+  body: string;
 };
 
 export type ActionResult<T> =
@@ -183,4 +223,13 @@ export type DesktopApi = {
   syncFolder: (input: SyncFolderInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   deleteMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   markRead: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  markUnread: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  toggleFlag: (input: ToggleFlagInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  markSpam: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  moveMessage: (input: MoveMessageInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  archiveMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  getSignature: (accountId: string) => Promise<ActionResult<{ body: string }>>;
+  setSignature: (input: SignatureInput) => Promise<ActionResult<{ body: string }>>;
+  saveAttachment: (input: SaveAttachmentInput) => Promise<SaveAttachmentResult>;
+  onWorkspaceUpdate: (callback: (snapshot: WorkspaceSnapshot) => void) => () => void;
 };

@@ -21,6 +21,36 @@ const getInitials = (value: string) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "M";
 
+const getFolderIcon = (folder: FolderSummary) => {
+  const normalizedName = folder.name.trim().toLowerCase();
+
+  if (["inbox"].includes(normalizedName)) {
+    return "✉";
+  }
+
+  if (["sent", "sent items", "sent mail"].includes(normalizedName)) {
+    return "↗";
+  }
+
+  if (["drafts", "draft"].includes(normalizedName)) {
+    return "✎";
+  }
+
+  if (["trash", "deleted", "deleted items", "bin"].includes(normalizedName)) {
+    return "🗑";
+  }
+
+  if (["archive", "all mail", "[gmail]/all mail"].includes(normalizedName)) {
+    return "☐";
+  }
+
+  if (["spam", "junk", "junk email"].includes(normalizedName)) {
+    return "⛨";
+  }
+
+  return "▣";
+};
+
 export function Sidebar({
   appName,
   accounts,
@@ -85,8 +115,13 @@ export function Sidebar({
                 onClick={() => onSelectFolder(folder.id)}
                 type="button"
               >
-                <span>{folder.name}</span>
-                <span className="folder-count">{folder.count}</span>
+                <span>
+                  <span className="folder-icon" aria-hidden="true">
+                    {getFolderIcon(folder)}
+                  </span>
+                  {folder.name}
+                </span>
+                {folder.count > 0 ? <span className="folder-count">{folder.count}</span> : null}
               </button>
             ))}
           </div>

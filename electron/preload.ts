@@ -11,7 +11,22 @@ const desktopApi = {
   fetchMessageBody: (input) => ipcRenderer.invoke("app:fetch-message-body", input),
   syncFolder: (input) => ipcRenderer.invoke("app:sync-folder", input),
   deleteMessage: (input) => ipcRenderer.invoke("app:delete-message", input),
-  markRead: (input) => ipcRenderer.invoke("app:mark-read", input)
+  markRead: (input) => ipcRenderer.invoke("app:mark-read", input),
+  markUnread: (input) => ipcRenderer.invoke("app:mark-unread", input),
+  toggleFlag: (input) => ipcRenderer.invoke("app:toggle-flag", input),
+  markSpam: (input) => ipcRenderer.invoke("app:mark-spam", input),
+  moveMessage: (input) => ipcRenderer.invoke("app:move-message", input),
+  archiveMessage: (input) => ipcRenderer.invoke("app:archive-message", input),
+  getSignature: (accountId) => ipcRenderer.invoke("app:get-signature", accountId),
+  setSignature: (input) => ipcRenderer.invoke("app:set-signature", input),
+  saveAttachment: (input) => ipcRenderer.invoke("app:save-attachment", input),
+  onWorkspaceUpdate: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]) => callback(snapshot);
+    ipcRenderer.on("workspace:updated", listener);
+    return () => {
+      ipcRenderer.off("workspace:updated", listener);
+    };
+  }
 } satisfies DesktopApi;
 
 contextBridge.exposeInMainWorld("desktopApi", Object.freeze(desktopApi));

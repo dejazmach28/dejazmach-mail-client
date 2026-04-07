@@ -8,6 +8,7 @@ import type {
   SyncStatus,
   WorkspaceSnapshot
 } from "../../shared/contracts.js";
+import { SignatureEditor } from "./SignatureEditor.js";
 
 type SettingsPanelProps = {
   environment: RuntimeEnvironment;
@@ -17,6 +18,7 @@ type SettingsPanelProps = {
   recentSyncJobs: SyncJob[];
   selectedAccount?: AccountSummary;
   verifyingAccountId: string | null;
+  onSignatureSaved: () => void;
   onVerifyAccount: (accountId: string) => void;
 };
 
@@ -65,6 +67,7 @@ export function SettingsPanel({
   recentSyncJobs,
   selectedAccount,
   verifyingAccountId,
+  onSignatureSaved,
   onVerifyAccount
 }: SettingsPanelProps) {
   return (
@@ -179,6 +182,10 @@ export function SettingsPanel({
                 )}
               </div>
             </div>
+          </section>
+
+          <section className="settings-grid">
+            <SignatureEditor accountId={selectedAccount.id} onSaved={onSignatureSaved} />
           </section>
         </>
       ) : (

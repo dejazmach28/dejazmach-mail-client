@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPlainTextMessage,
+  extractMimeContent,
   parseImapFetchEnvelope,
   parseImapListLine,
   parseImapStatusLine,
@@ -20,6 +21,14 @@ test("parseImapListLine extracts folder name and attributes", () => {
     attributes: ["hasnochildren", "sent"],
     delimiter: "/",
     name: "Sent Items"
+  });
+});
+
+test("parseImapListLine handles nil delimiters and nested folder names", () => {
+  assert.deepEqual(parseImapListLine('* LIST (\\HasChildren) NIL "Projects/2026/Q2"'), {
+    attributes: ["haschildren"],
+    delimiter: "",
+    name: "Projects/2026/Q2"
   });
 });
 
@@ -68,4 +77,44 @@ test("buildPlainTextMessage creates a transport-safe text payload", () => {
   assert.match(message, /In-Reply-To: <original@example.com>/);
   assert.match(message, /References: <root@example.com> <original@example.com>/);
   assert.match(message, /\r\n\.\.leading line$/);
+});
+
+test("extractMimeContent decodes multipart html and quoted-printable utf-8 text", () => {
+  const rawMessage = Buffer.from(
+    [
+      'Content-Type: multipart/alternative; boundary="mix"',
+      "",
+      "--mix",
+      'Content-Type: text/plain; charset="utf-8"',
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      "Hello =C2=A0world",
+      "--mix",
+      'Content-Type: text/html; charset="utf-8"',
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      "<p>Hello =C2=A0<strong>world</strong></p>",
+      "--mix--"
+    ].join("\r\n"),
+    "utf8"
+  );
+
+  assert.deepEqual(extractMimeContent(rawMessage), {
+    body: "Hello \u00a0world",
+    html: "<p>Hello \u00a0<strong>world</strong></p>",
+    attachments: []
+  });
+});
+
+test("extractMimeContent respects latin1 charset for plain text bodies", () => {
+  const rawMessage = Buffer.concat([
+    Buffer.from('Content-Type: text/plain; charset="iso-8859-1"\r\n\r\n', "utf8"),
+    Buffer.from([0x4f, 0x6c, 0xe1])
+  ]);
+
+  assert.deepEqual(extractMimeContent(rawMessage), {
+    body: "Olá",
+    html: null,
+    attachments: []
+  });
 });

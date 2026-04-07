@@ -1,7 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import { once } from "node:events";
-import type { SmtpAuthMethod, TransportSecurity } from "../shared/contracts.js";
+import type { Attachment, SmtpAuthMethod, TransportSecurity } from "../shared/contracts.js";
 
 type SocketLike = net.Socket | tls.TLSSocket;
 
@@ -58,6 +58,7 @@ export type SendMessageInput = {
   outgoingSecurity: TransportSecurity;
   outgoingAuthMethod: SmtpAuthMethod;
   to: string;
+  cc?: string;
   subject: string;
   body: string;
   inReplyTo?: string;
@@ -87,6 +88,7 @@ export type SyncFolderInput = {
 export type FetchedMessageBody = {
   body: string;
   html: string | null;
+  attachments: Attachment[];
 };
 
 type ImapMessageMutationInput = {
@@ -97,6 +99,10 @@ type ImapMessageMutationInput = {
   incomingSecurity: TransportSecurity;
   folderName: string;
   uid: number;
+};
+
+type ImapMoveMessageInput = ImapMessageMutationInput & {
+  targetFolderName: string;
 };
 
 type Reply = {
@@ -170,6 +176,27 @@ const normalizePlainText = (value: string) =>
     .map((line) => (line.startsWith(".") ? `.${line}` : line))
     .join("\r\n");
 
+const parseAddressList = (value: string) =>
+  value
+    .split(/[;,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const encodeQuotedPrintable = (value: string) =>
+  Buffer.from(value, "utf8")
+    .reduce((parts: string[], byte) => {
+      if ((byte >= 33 && byte <= 60) || (byte >= 62 && byte <= 126) || byte === 9 || byte === 32) {
+        parts.push(String.fromCharCode(byte));
+      } else if (byte === 10) {
+        parts.push("\r\n");
+      } else if (byte !== 13) {
+        parts.push(`=${byte.toString(16).toUpperCase().padStart(2, "0")}`);
+      }
+
+      return parts;
+    }, [])
+    .join("");
+
 const escapeImapString = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 export const parseImapStatusLine = (line: string) => {
@@ -194,10 +221,23 @@ export const parseImapStatusLine = (line: string) => {
 };
 
 export const parseImapListLine = (line: string) => {
-  const match = /^\* LIST \(([^)]*)\) "(.*)" "?(.+?)"?$/.exec(line.trim());
+  const match = /^\* LIST \(([^)]*)\)\s+((?:"(?:[^"\\]|\\.)*"|NIL))\s+(.+)$/.exec(line.trim());
   if (!match) {
     return null;
   }
+
+  const decodeToken = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed.toUpperCase() === "NIL") {
+      return "";
+    }
+
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
+    }
+
+    return trimmed;
+  };
 
   const attributes = match[1]
     .trim()
@@ -207,8 +247,8 @@ export const parseImapListLine = (line: string) => {
 
   return {
     attributes,
-    delimiter: match[2],
-    name: match[3]
+    delimiter: decodeToken(match[2]),
+    name: decodeToken(match[3])
   };
 };
 
@@ -381,6 +421,7 @@ export const buildPlainTextMessage = ({
   fromAddress,
   fromName,
   to,
+  cc,
   subject,
   body,
   inReplyTo,
@@ -389,6 +430,7 @@ export const buildPlainTextMessage = ({
   fromAddress: string;
   fromName: string;
   to: string;
+  cc?: string;
   subject: string;
   body: string;
   inReplyTo?: string;
@@ -396,19 +438,23 @@ export const buildPlainTextMessage = ({
 }) => {
   const fromHeader = fromName.trim() ? `${fromName.trim()} <${fromAddress}>` : fromAddress;
   const normalizedReferences = Array.from(new Set((references ?? []).filter(Boolean)));
+  const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2, 10)}@dejazmach.local>`;
+  const normalizedBody = encodeQuotedPrintable(normalizePlainText(body || ""));
 
   return [
     `From: ${fromHeader}`,
     `To: ${to}`,
+    ...(cc?.trim() ? [`Cc: ${cc.trim()}`] : []),
     `Subject: ${subject || "No subject"}`,
+    `Message-ID: ${messageId}`,
     `Date: ${new Date().toUTCString()}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
     ...(normalizedReferences.length > 0 ? [`References: ${normalizedReferences.join(" ")}`] : []),
     "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="utf-8"',
-    "Content-Transfer-Encoding: 8bit",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: quoted-printable",
     "",
-    normalizePlainText(body || "")
+    normalizedBody
   ].join("\r\n");
 };
 
@@ -600,7 +646,7 @@ const runImapCommand = async (socket: LineSocket, tag: string, command: string) 
 const runImapLiteralCommand = async (socket: LineSocket, tag: string, command: string) => {
   socket.write(`${tag} ${command}\r\n`);
   const lines: string[] = [];
-  const literals: string[] = [];
+  const literals: Buffer[] = [];
 
   while (true) {
     const line = await socket.readLine();
@@ -610,7 +656,7 @@ const runImapLiteralCommand = async (socket: LineSocket, tag: string, command: s
     if (literalMatch) {
       const literalLength = Number(literalMatch[1]);
       const literal = await socket.readBytes(literalLength);
-      literals.push(literal.toString("utf8"));
+      literals.push(literal);
     }
 
     if (line.startsWith(`${tag} `)) {
@@ -626,10 +672,22 @@ const runImapLiteralCommand = async (socket: LineSocket, tag: string, command: s
   return { lines, literals };
 };
 
-const decodeQuotedPrintable = (value: string) =>
-  value
-    .replace(/=\r?\n/g, "")
-    .replace(/=([A-Fa-f0-9]{2})/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+const decodeQuotedPrintableBuffer = (input: string) => {
+  const normalized = input.replace(/=\r?\n/g, "");
+  const bytes: number[] = [];
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    if (normalized[index] === "=" && /^[0-9A-Fa-f]{2}$/.test(normalized.slice(index + 1, index + 3))) {
+      bytes.push(Number.parseInt(normalized.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+
+    bytes.push(normalized.charCodeAt(index) & 0xff);
+  }
+
+  return Buffer.from(bytes);
+};
 
 const stripHtmlTags = (value: string) =>
   value
@@ -667,73 +725,143 @@ const extractBoundary = (contentType: string) => {
   return boundaryMatch?.[1] ?? "";
 };
 
-const decodeMimeContent = (body: string, transferEncoding: string) => {
+const getMimeCharset = (contentType: string): BufferEncoding => {
+  const charsetMatch = /charset="?([^";]+)"?/i.exec(contentType);
+  const normalizedCharset = charsetMatch?.[1]?.trim().toLowerCase() ?? "utf-8";
+
+  if (normalizedCharset === "iso-8859-1" || normalizedCharset === "latin1") {
+    return "latin1";
+  }
+
+  return "utf8";
+};
+
+const decodeMimeContentBuffer = (body: string, transferEncoding: string) => {
   const normalizedEncoding = transferEncoding.trim().toLowerCase();
 
   if (normalizedEncoding === "base64") {
-    return Buffer.from(body.replace(/\s+/g, ""), "base64").toString("utf8");
+    return Buffer.from(body.replace(/\s+/g, ""), "base64");
   }
 
   if (normalizedEncoding === "quoted-printable") {
-    return decodeQuotedPrintable(body);
+    return decodeQuotedPrintableBuffer(body);
   }
 
-  return body;
+  return Buffer.from(body, "latin1");
 };
 
-const extractMimeContent = (rawMessage: string): FetchedMessageBody => {
-  const normalizedMessage = rawMessage.replace(/\r\n/g, "\n");
-  const separatorIndex = normalizedMessage.indexOf("\n\n");
-  const headerBlock = separatorIndex === -1 ? "" : normalizedMessage.slice(0, separatorIndex);
-  const bodyBlock = separatorIndex === -1 ? normalizedMessage : normalizedMessage.slice(separatorIndex + 2);
+const decodeMimeContent = (body: string, transferEncoding: string, charset: BufferEncoding) => {
+  return decodeMimeContentBuffer(body, transferEncoding).toString(charset);
+};
+
+const splitMimeMessage = (rawMessage: Buffer) => {
+  const crlfSeparator = Buffer.from("\r\n\r\n", "utf8");
+  const lfSeparator = Buffer.from("\n\n", "utf8");
+  const crlfIndex = rawMessage.indexOf(crlfSeparator);
+
+  if (crlfIndex !== -1) {
+    return {
+      headerBlock: rawMessage.subarray(0, crlfIndex).toString("latin1"),
+      bodyBlock: rawMessage.subarray(crlfIndex + crlfSeparator.length)
+    };
+  }
+
+  const lfIndex = rawMessage.indexOf(lfSeparator);
+  if (lfIndex !== -1) {
+    return {
+      headerBlock: rawMessage.subarray(0, lfIndex).toString("latin1"),
+      bodyBlock: rawMessage.subarray(lfIndex + lfSeparator.length)
+    };
+  }
+
+  return {
+    headerBlock: "",
+    bodyBlock: rawMessage
+  };
+};
+
+export const extractMimeContent = (rawMessage: Buffer): FetchedMessageBody => {
+  const { headerBlock, bodyBlock } = splitMimeMessage(rawMessage);
   const headers = parseMimeHeaders(headerBlock);
   const contentType = headers.get("content-type") ?? "text/plain";
   const transferEncoding = headers.get("content-transfer-encoding") ?? "";
+  const disposition = headers.get("content-disposition") ?? "";
+  const charset = getMimeCharset(contentType);
+  const filename =
+    /filename\*?="?([^";]+)"?/i.exec(disposition)?.[1] ??
+    /name\*?="?([^";]+)"?/i.exec(contentType)?.[1] ??
+    "attachment";
+  const isTextPart = /text\/plain/i.test(contentType) || /text\/html/i.test(contentType);
+  const isAttachment = /attachment/i.test(disposition) || (!isTextPart && !/multipart\//i.test(contentType));
 
   if (/multipart\//i.test(contentType)) {
     const boundary = extractBoundary(contentType);
     if (!boundary) {
       return {
-        body: bodyBlock.trim(),
-        html: null
+        body: bodyBlock.toString("utf8").trim(),
+        html: null,
+        attachments: []
       };
     }
 
     const parts = bodyBlock
+      .toString("latin1")
       .split(`--${boundary}`)
       .map((part) => part.trim())
       .filter((part) => part && part !== "--");
-    const textParts: string[] = [];
-    const htmlParts: string[] = [];
+    let plainBody = "";
+    let htmlBody: string | null = null;
+    const attachments: Attachment[] = [];
 
     for (const part of parts) {
-      const nextPart = extractMimeContent(part);
-      if (nextPart.body) {
-        textParts.push(nextPart.body);
+      const nextPart = extractMimeContent(Buffer.from(part, "latin1"));
+      if (!plainBody && nextPart.body) {
+        plainBody = nextPart.body;
       }
-      if (nextPart.html) {
-        htmlParts.push(nextPart.html);
+      if (!htmlBody && nextPart.html) {
+        htmlBody = nextPart.html;
       }
+      attachments.push(...nextPart.attachments);
     }
 
     return {
-      body: textParts.join("\n\n").trim() || stripHtmlTags(htmlParts.join("\n")).trim(),
-      html: htmlParts.length > 0 ? htmlParts.join("\n") : null
+      body: plainBody || stripHtmlTags(htmlBody ?? "").trim(),
+      html: htmlBody,
+      attachments
     };
   }
 
-  const decodedBody = decodeMimeContent(bodyBlock, transferEncoding).trim();
+  if (isAttachment) {
+    const decodedBuffer = decodeMimeContentBuffer(bodyBlock.toString("latin1"), transferEncoding);
+
+    return {
+      body: "",
+      html: null,
+      attachments: [
+        {
+          filename,
+          mimeType: contentType.split(";")[0]?.trim().toLowerCase() || "application/octet-stream",
+          size: decodedBuffer.byteLength,
+          data: decodedBuffer.toString("base64")
+        }
+      ]
+    };
+  }
+
+  const decodedBody = decodeMimeContent(bodyBlock.toString("latin1"), transferEncoding, charset).trim();
 
   if (/text\/html/i.test(contentType)) {
     return {
       body: stripHtmlTags(decodedBody),
-      html: decodedBody || null
+      html: decodedBody || null,
+      attachments: []
     };
   }
 
   return {
     body: decodedBody,
-    html: null
+    html: null,
+    attachments: []
   };
 };
 
@@ -819,6 +947,10 @@ const classifyImapFolder = (name: string, attributes: string[]) => {
 
   if (attributes.includes("trash") || normalizedName.includes("trash") || normalizedName.includes("bin")) {
     return "trash" as const;
+  }
+
+  if (attributes.includes("junk") || attributes.includes("spam") || normalizedName.includes("junk") || normalizedName.includes("spam")) {
+    return "custom" as const;
   }
 
   return "custom" as const;
@@ -1014,8 +1146,8 @@ export const fetchImapMessageBody = async (input: FetchMessageBodyInput) => {
   try {
     await runImapCommand(socket, "B0002", `SELECT ${escapeImapString(input.folderName)}`);
     const bodyResult = await runImapLiteralCommand(socket, "B0003", `UID FETCH ${input.uid} BODY.PEEK[]`);
-    const messageLiteral = bodyResult.literals[0] ?? "";
-    if (!messageLiteral) {
+    const messageLiteral = bodyResult.literals[0];
+    if (!messageLiteral || messageLiteral.length === 0) {
       throw new Error(`The IMAP server returned no body data for UID ${input.uid}.`);
     }
 
@@ -1036,6 +1168,32 @@ export const markImapMessageRead = async (input: ImapMessageMutationInput) => {
   }
 };
 
+export const markImapMessageUnread = async (input: ImapMessageMutationInput) => {
+  const socket = await createAuthenticatedImapSocket(input);
+
+  try {
+    await runImapCommand(socket, "U0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "U0003", `UID STORE ${input.uid} -FLAGS.SILENT (\\Seen)`);
+  } finally {
+    await logoutImapSocket(socket, "U0004");
+  }
+};
+
+export const toggleImapMessageFlag = async (input: ImapMessageMutationInput & { flagged: boolean }) => {
+  const socket = await createAuthenticatedImapSocket(input);
+
+  try {
+    await runImapCommand(socket, "G0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(
+      socket,
+      "G0003",
+      `UID STORE ${input.uid} ${input.flagged ? "+" : "-"}FLAGS.SILENT (\\Flagged)`
+    );
+  } finally {
+    await logoutImapSocket(socket, "G0004");
+  }
+};
+
 export const deleteImapMessage = async (input: ImapMessageMutationInput) => {
   const socket = await createAuthenticatedImapSocket(input);
 
@@ -1045,6 +1203,23 @@ export const deleteImapMessage = async (input: ImapMessageMutationInput) => {
     await runImapCommand(socket, "D0004", "EXPUNGE");
   } finally {
     await logoutImapSocket(socket, "D0005");
+  }
+};
+
+export const moveImapMessage = async (input: ImapMoveMessageInput) => {
+  const socket = await createAuthenticatedImapSocket(input);
+
+  try {
+    await runImapCommand(socket, "V0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(
+      socket,
+      "V0003",
+      `UID COPY ${input.uid} ${escapeImapString(input.targetFolderName)}`
+    );
+    await runImapCommand(socket, "V0004", `UID STORE ${input.uid} +FLAGS.SILENT (\\Deleted)`);
+    await runImapCommand(socket, "V0005", "EXPUNGE");
+  } finally {
+    await logoutImapSocket(socket, "V0006");
   }
 };
 
@@ -1089,9 +1264,11 @@ export const sendPlainTextMessage = async (input: SendMessageInput) => {
     reply = await socket.readReply();
     assertSmtpReply(reply, 250, "SMTP MAIL FROM");
 
-    socket.write(`RCPT TO:<${input.to}>\r\n`);
-    reply = await socket.readReply();
-    assertSmtpReply(reply, 250, "SMTP RCPT TO");
+    for (const recipient of [...parseAddressList(input.to), ...parseAddressList(input.cc ?? "")]) {
+      socket.write(`RCPT TO:<${recipient}>\r\n`);
+      reply = await socket.readReply();
+      assertSmtpReply(reply, 250, "SMTP RCPT TO");
+    }
 
     socket.write("DATA\r\n");
     reply = await socket.readReply();

@@ -301,9 +301,10 @@ dt {
   white-space: nowrap;
 }
 
-.folder-tile span:first-child::before {
-  content: "•";
+.folder-icon {
   color: rgba(255, 255, 255, 0.58);
+  font-size: 0.9rem;
+  line-height: 1;
 }
 
 .sidebar-empty {
@@ -504,6 +505,11 @@ dt {
   color: var(--text);
 }
 
+.message-flagged {
+  color: #f4b400;
+  font-size: 0.82rem;
+}
+
 .message-preview {
   margin-top: 3px;
   font-size: 0.75rem;
@@ -612,6 +618,43 @@ dt {
   gap: 8px;
 }
 
+.flag-button {
+  color: var(--gray-400);
+  font-size: 1rem;
+}
+
+.flag-button-active {
+  color: #f4b400;
+}
+
+.more-menu-shell {
+  position: relative;
+}
+
+.more-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 3;
+  display: grid;
+  min-width: 160px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.12);
+}
+
+.more-menu button {
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.more-menu button:hover {
+  background: var(--gray-200);
+}
+
 .thread-stream {
   flex: 1;
   min-height: 0;
@@ -673,6 +716,40 @@ dt {
   line-height: 1.5;
 }
 
+.html-choice-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  margin-bottom: 16px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: var(--blue);
+  font-size: 0.82rem;
+}
+
+.html-choice-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.html-choice-button {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--blue);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.html-choice-button-secondary {
+  background: rgba(59, 130, 246, 0.08);
+}
+
 .thread-body {
   margin: 0;
   color: #374151;
@@ -680,6 +757,82 @@ dt {
   line-height: 1.7;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+.html-email-body {
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #374151;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.html-email-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.html-email-body a {
+  color: #3b82f6;
+}
+
+.html-email-body p {
+  margin: 0 0 12px 0;
+}
+
+.attachment-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.attachment-label {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.attachment-chip-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.attachment-chip-copy span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.attachment-chip-copy strong {
+  font-size: 0.84rem;
+}
+
+.attachment-chip-copy span:last-child span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.attachment-download {
+  color: var(--blue);
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .compose-form {
@@ -711,6 +864,14 @@ dt {
   font-weight: 600;
 }
 
+.inline-link {
+  align-self: flex-start;
+  padding: 0;
+  color: var(--blue);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
 .field textarea {
   min-height: 260px;
   line-height: 1.6;
@@ -727,11 +888,25 @@ dt {
   background: #fff;
 }
 
+.compose-actions-inline {
+  padding: 0;
+  border-top: 0;
+}
+
 .primary-button,
 .secondary-button {
   min-height: 40px;
   padding: 0 16px;
   font-weight: 600;
+}
+
+.move-select {
+  min-height: 40px;
+  min-width: 150px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
 }
 
 .primary-button {
@@ -899,12 +1074,30 @@ dt {
 }
 
 .inline-notice {
+  position: relative;
   padding: 12px 14px;
   border: 1px solid rgba(194, 122, 22, 0.18);
   border-radius: 12px;
   background: #fff7ed;
   color: #b45309;
   font-size: 0.88rem;
+}
+
+.toast-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.6;
+  color: inherit;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
 }
 
 .inline-notice-critical {

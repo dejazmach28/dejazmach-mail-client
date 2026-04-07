@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import type { AccountSummary, CreateDraftInput } from "../../shared/contracts.js";
 
@@ -22,6 +23,22 @@ export function ComposePanel({
   onSend,
   onSubmit
 }: ComposePanelProps) {
+  const [showCc, setShowCc] = useState(Boolean(draftForm.cc));
+
+  useEffect(() => {
+    if (!window.desktopApi || !draftForm.accountId || draftForm.body.trim()) {
+      return;
+    }
+
+    void window.desktopApi.getSignature(draftForm.accountId).then((result) => {
+      if (!result.ok || !result.data.body.trim()) {
+        return;
+      }
+
+      onFieldChange("body", `\n\n-- \n${result.data.body}`);
+    });
+  }, [draftForm.accountId, draftForm.body, onFieldChange]);
+
   return (
     <article className="reader-card">
       <header className="pane-header">
@@ -59,6 +76,27 @@ export function ComposePanel({
               value={draftForm.to}
             />
           </label>
+
+          <div className="field field-full">
+            {!showCc ? (
+              <button
+                className="inline-link"
+                onClick={() => setShowCc(true)}
+                type="button"
+              >
+                + CC
+              </button>
+            ) : (
+              <label className="field field-full">
+                <span>CC</span>
+                <input
+                  onChange={(event) => onFieldChange("cc", event.target.value)}
+                  placeholder="copy@example.com"
+                  value={draftForm.cc ?? ""}
+                />
+              </label>
+            )}
+          </div>
 
           <label className="field field-full">
             <span>Subject</span>

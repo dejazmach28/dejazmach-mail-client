@@ -1,4 +1,5 @@
 import electron from "electron";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLoadFailureUrl, createSplashScreenUrl } from "./loadScreens.js";
@@ -6,17 +7,21 @@ import { MailService } from "./mailService.js";
 import { getEnvironment, isAllowedNavigation, isAllowedRendererRequest, isSafeExternalUrl } from "./shellPolicy.js";
 import { createCipher } from "./vault.js";
 import { createWindowStateStore } from "./windowState.js";
-const { app, BrowserWindow, Menu, ipcMain, session, shell } = electron;
+const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell } = electron;
 type BrowserWindowInstance = InstanceType<typeof BrowserWindow>;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const appUrl = devServerUrl ?? `file://${path.join(__dirname, "../../dist/index.html")}`;
+const windowIconPath = path.join(__dirname, "../../assets/icons/256x256.png");
 
 let mainWindow: BrowserWindowInstance | null = null;
 let splashWindow: BrowserWindowInstance | null = null;
 let mailService: MailService | null = null;
 let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null;
+let backgroundSyncInterval: ReturnType<typeof setInterval> | null = null;
+let initialBackgroundSyncTimeout: ReturnType<typeof setTimeout> | null = null;
+let backgroundSyncRunning = false;
 
 const getErrorMessage = (error: unknown) => (error instanceof Error ? error.message : "Unknown application error.");
 const getEnvironmentState = () => getEnvironment(app.isPackaged, devServerUrl);
@@ -118,7 +123,135 @@ const focusMainWindow = () => {
     mainWindow.restore();
   }
 
+  mainWindow.show();
   mainWindow.focus();
+};
+
+const pushWorkspaceSnapshot = (snapshot: ReturnType<MailService["getWorkspaceSnapshot"]>) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("workspace:updated", snapshot);
+};
+
+const updateUnreadBadge = (snapshot: ReturnType<MailService["getWorkspaceSnapshot"]>) => {
+  const unreadCount = snapshot.messages.filter((message) => message.unread).length;
+
+  if (process.platform === "darwin") {
+    return;
+  }
+
+  if (process.platform === "win32" && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setOverlayIcon(null, "");
+  }
+
+  app.setBadgeCount(unreadCount > 0 ? unreadCount : 0);
+};
+
+const showIncomingMessageNotifications = (
+  accountAddress: string,
+  newMessages: Array<{ sender: string; subject: string }>
+) => {
+  if (newMessages.length === 0) {
+    return;
+  }
+
+  if (typeof Notification.isSupported === "function" && !Notification.isSupported()) {
+    return;
+  }
+
+  try {
+    if (newMessages.length > 2) {
+      const notification = new Notification({
+        title: "DejAzmach",
+        body: `${newMessages.length} new messages in ${accountAddress}`,
+        silent: false
+      });
+
+      notification.on("click", focusMainWindow);
+      notification.show();
+      return;
+    }
+
+    for (const message of newMessages) {
+      const notification = new Notification({
+        title: message.sender || accountAddress,
+        body: message.subject || "(no subject)",
+        silent: false
+      });
+
+      notification.on("click", focusMainWindow);
+      notification.show();
+    }
+  } catch (error) {
+    console.error("Notification delivery failed.", error);
+  }
+};
+
+const syncFolderAndBroadcast = async (
+  input: { accountId: string; folderName: string; limit?: number },
+  options?: { notify?: boolean; recordActivity?: boolean; broadcast?: boolean }
+) => {
+  const service = requireMailService();
+  const result = await service.syncFolderWithResult(input, createWorkspaceContext(), {
+    recordActivity: options?.recordActivity ?? true
+  });
+  const account = service.listAccountsForSync().find((candidate) => candidate.id === input.accountId);
+
+  updateUnreadBadge(result.snapshot);
+  if (options?.broadcast ?? true) {
+    pushWorkspaceSnapshot(result.snapshot);
+  }
+
+  if (options?.notify !== false && result.newMessages.length > 0) {
+    showIncomingMessageNotifications(account?.address ?? "Mailbox", result.newMessages);
+  }
+
+  return result;
+};
+
+const syncAllAccountInboxes = async () => {
+  if (backgroundSyncRunning) {
+    return;
+  }
+
+  backgroundSyncRunning = true;
+
+  try {
+    const service = requireMailService();
+    const accounts = service.listAccountsForSync();
+    let latestSnapshot = service.getWorkspaceSnapshot(createWorkspaceContext());
+    let foundNewMessages = false;
+
+    for (const account of accounts) {
+      try {
+        const result = await syncFolderAndBroadcast(
+          {
+            accountId: account.id,
+            folderName: "INBOX",
+            limit: 10
+          },
+          {
+            notify: true,
+            recordActivity: false,
+            broadcast: false
+          }
+        );
+        latestSnapshot = result.snapshot;
+        foundNewMessages = foundNewMessages || result.newMessages.length > 0;
+      } catch (error) {
+        console.error(`Background inbox sync failed for ${account.address}.`, error);
+      }
+    }
+
+    updateUnreadBadge(latestSnapshot);
+    if (foundNewMessages) {
+      pushWorkspaceSnapshot(latestSnapshot);
+    }
+  } finally {
+    backgroundSyncRunning = false;
+  }
 };
 
 const createSplashWindow = () => {
@@ -132,6 +265,7 @@ const createSplashWindow = () => {
     frame: false,
     autoHideMenuBar: true,
     show: true,
+    icon: windowIconPath,
     backgroundColor: "#110f0c",
     webPreferences: {
       sandbox: true,
@@ -166,6 +300,7 @@ const createMainWindow = () => {
     minHeight: 760,
     backgroundColor: "#120f0a",
     title: "DejAzmach",
+    icon: windowIconPath,
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
@@ -269,6 +404,8 @@ const loadApplicationUi = async (window: BrowserWindowInstance) => {
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
+app.setName("DejAzmach");
+
 if (!gotSingleInstanceLock) {
   app.quit();
 }
@@ -361,6 +498,34 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:get-signature", async (_event, accountId) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().getSignature(accountId)
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
+
+  ipcMain.handle("app:set-signature", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().setSignature(input.accountId, input.body)
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error)
+      };
+    }
+  });
+
   ipcMain.handle("app:fetch-message-body", async (_event, input) => {
     try {
       return {
@@ -377,9 +542,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("app:sync-folder", async (_event, input) => {
     try {
+      const result = await syncFolderAndBroadcast(input, {
+        notify: true,
+        recordActivity: true
+      });
       return {
         ok: true as const,
-        data: await requireMailService().syncFolder(input, createWorkspaceContext())
+        data: result.snapshot
       };
     } catch (error) {
       return {
@@ -405,6 +574,36 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:move-message", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().moveMessage(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:archive-message", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().archiveMessage(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
   ipcMain.handle("app:mark-read", async (_event, input) => {
     try {
       return {
@@ -420,6 +619,70 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:mark-unread", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().markUnread(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:toggle-flag", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().toggleFlag(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:mark-spam", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: await requireMailService().markSpam(input, createWorkspaceContext())
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: requireMailService().getWorkspaceSnapshot(createWorkspaceContext())
+      };
+    }
+  });
+
+  ipcMain.handle("app:save-attachment", async (_event, input) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: input.filename
+    });
+
+    if (result.canceled || !result.filePath) {
+      return {
+        saved: false,
+        path: null
+      };
+    }
+
+    await fs.writeFile(result.filePath, Buffer.from(input.data, "base64"));
+    return {
+      saved: true,
+      path: result.filePath
+    };
+  });
+
   if (process.platform === "win32") {
     app.setAppUserModelId("com.dejazmach.mail");
   }
@@ -427,6 +690,19 @@ app.whenReady().then(async () => {
   createSplashWindow();
   const window = createMainWindow();
   await loadApplicationUi(window);
+  updateUnreadBadge(requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
+
+  initialBackgroundSyncTimeout = setTimeout(() => {
+    void syncAllAccountInboxes().catch((error) => {
+      console.error("Initial background sync failed.", error);
+    });
+  }, 5000);
+
+  backgroundSyncInterval = setInterval(() => {
+    void syncAllAccountInboxes().catch((error) => {
+      console.error("Background sync interval failed.", error);
+    });
+  }, 60000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -450,6 +726,16 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (initialBackgroundSyncTimeout) {
+    clearTimeout(initialBackgroundSyncTimeout);
+    initialBackgroundSyncTimeout = null;
+  }
+
+  if (backgroundSyncInterval) {
+    clearInterval(backgroundSyncInterval);
+    backgroundSyncInterval = null;
+  }
+
   mailService?.close();
   mailService = null;
 });

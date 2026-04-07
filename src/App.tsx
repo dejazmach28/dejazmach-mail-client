@@ -144,12 +144,41 @@ const applyFetchedMessageBody = (
         ? {
             ...message,
             body: fetchedMessage.body,
-            contentMode: fetchedMessage.html ? "html-blocked" : "plain"
+            html: fetchedMessage.html,
+            attachments: fetchedMessage.attachments,
+            contentMode: "plain"
           }
         : message
     )
   }))
 });
+
+type NoticeTone = "warning" | "critical" | "success";
+
+const NoticeBanner = ({
+  message,
+  tone,
+  onDismiss
+}: {
+  message: string;
+  tone: NoticeTone;
+  onDismiss: () => void;
+}) => (
+  <p
+    className={[
+      "inline-notice",
+      tone === "critical" ? "inline-notice-critical" : "",
+      tone === "success" ? "inline-notice-success" : ""
+    ]
+      .filter(Boolean)
+      .join(" ")}
+  >
+    {message}
+    <button aria-label="Dismiss notification" className="toast-dismiss" onClick={onDismiss} type="button">
+      ×
+    </button>
+  </p>
+);
 
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
@@ -161,6 +190,7 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNoticeDuration, setActionNoticeDuration] = useState(5000);
   const [isBooting, setIsBooting] = useState(Boolean(window.desktopApi));
   const [isSavingAccount, setIsSavingAccount] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -172,6 +202,7 @@ function App() {
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
     accountId: "",
     to: "",
+    cc: "",
     subject: "",
     body: ""
   });
@@ -220,6 +251,63 @@ function App() {
       });
   }, []);
 
+  useEffect(() => {
+    if (!window.desktopApi) {
+      return;
+    }
+
+    return window.desktopApi.onWorkspaceUpdate((snapshot) => {
+      applyWorkspace(snapshot);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!loadError) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setLoadError(null);
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loadError]);
+
+  useEffect(() => {
+    if (!actionError) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setActionError(null);
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [actionError]);
+
+  useEffect(() => {
+    if (!actionNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setActionNotice(null);
+    }, actionNoticeDuration);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [actionNotice, actionNoticeDuration]);
+
+  const showActionNotice = (message: string, duration = 5000) => {
+    setActionNoticeDuration(duration);
+    setActionNotice(message);
+  };
+
   const hasAccounts = workspace.accounts.length > 0;
   const selectedAccount =
     workspace.accounts.find((account) => account.id === selectedAccountId) ?? workspace.accounts[0];
@@ -248,36 +336,6 @@ function App() {
   const recentSecurityMetrics = workspace.shellState.securityMetrics.slice(0, 4);
   const recentSyncJobs = workspace.syncJobs.slice(0, 3);
 
-  useEffect(() => {
-    const desktopApi = window.desktopApi;
-    if (!desktopApi || !selectedAccountId || !selectedFolder?.name) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void desktopApi
-        .syncFolder({
-          accountId: selectedAccountId,
-          folderName: selectedFolder.name
-        })
-        .then((result) => {
-          if (result.data) {
-            applyWorkspace(result.data);
-          }
-          if (!result.ok) {
-            throw new Error(result.error);
-          }
-        })
-        .catch((error) => {
-          setActionError(error instanceof Error ? error.message : "Automatic folder sync failed.");
-        });
-    }, 300000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [selectedAccountId, selectedFolder?.name]);
-
   const updateAccountForm = <K extends keyof CreateAccountInput>(field: K, value: CreateAccountInput[K]) => {
     setAccountForm((current) => ({
       ...current,
@@ -296,6 +354,7 @@ function App() {
     setDraftForm((currentDraft) => ({
       ...currentDraft,
       to: "",
+      cc: "",
       subject: "",
       body: "",
       replyToMessageId: undefined
@@ -394,9 +453,103 @@ function App() {
         applyWorkspace(result.data);
       }
       unwrapResult(result);
-      setActionNotice("Message deleted.");
+      showActionNotice("Message deleted.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message delete failed.");
+    }
+  };
+
+  const handleMoveMessage = async (accountId: string, messageId: string, targetFolderName: string) => {
+    if (!window.desktopApi) {
+      setActionError("Moving a message requires the Electron desktop shell.");
+      return;
+    }
+
+    setActionError(null);
+    setActionNotice(null);
+
+    try {
+      const result = await window.desktopApi.moveMessage({ accountId, messageId, targetFolderName });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+      showActionNotice(`Message moved to ${targetFolderName}.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message move failed.");
+    }
+  };
+
+  const handleArchiveMessage = async (accountId: string, messageId: string) => {
+    if (!window.desktopApi) {
+      setActionError("Archiving a message requires the Electron desktop shell.");
+      return;
+    }
+
+    setActionError(null);
+    setActionNotice(null);
+
+    try {
+      const result = await window.desktopApi.archiveMessage({ accountId, messageId });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+      showActionNotice("Message archived.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message archive failed.");
+    }
+  };
+
+  const handleMarkUnread = async (accountId: string, messageId: string) => {
+    if (!window.desktopApi) {
+      setActionError("Marking unread requires the Electron desktop shell.");
+      return;
+    }
+
+    try {
+      const result = await window.desktopApi.markUnread({ accountId, messageId });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Mark unread failed.");
+    }
+  };
+
+  const handleToggleFlag = async (accountId: string, messageId: string, flagged: boolean) => {
+    if (!window.desktopApi) {
+      setActionError("Flagging a message requires the Electron desktop shell.");
+      return;
+    }
+
+    try {
+      const result = await window.desktopApi.toggleFlag({ accountId, messageId, flagged });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Flag update failed.");
+    }
+  };
+
+  const handleMarkSpam = async (accountId: string, messageId: string) => {
+    if (!window.desktopApi) {
+      setActionError("Spam actions require the Electron desktop shell.");
+      return;
+    }
+
+    try {
+      const result = await window.desktopApi.markSpam({ accountId, messageId });
+      if (result.data) {
+        applyWorkspace(result.data);
+      }
+      unwrapResult(result);
+      showActionNotice("Message moved to spam.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Mark spam failed.");
     }
   };
 
@@ -428,7 +581,7 @@ function App() {
       setAccountForm(initialAccountForm);
       setShowAccountSetup(false);
       setActiveSurface("message");
-      setActionNotice(`Stored ${accountForm.address} in the local account vault.`);
+      showActionNotice(`Stored ${accountForm.address} in the local account vault.`);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Account onboarding failed.");
     } finally {
@@ -457,7 +610,7 @@ function App() {
       setSelectedThreadId(getFirstThreadId(nextWorkspace, draftForm.accountId, nextFolderId));
       resetDraftFields();
       setActiveSurface("message");
-      setActionNotice("Draft stored locally.");
+      showActionNotice("Draft stored locally.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Draft persistence failed.");
     } finally {
@@ -487,7 +640,7 @@ function App() {
       setSelectedFolderId(nextFolderId);
       setSelectedThreadId(getFirstThreadId(nextWorkspace, accountId, nextFolderId));
       setActiveSurface("message");
-      setActionNotice("Account verification completed and server folders were refreshed.");
+      showActionNotice("Account verification completed and server folders were refreshed.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Provider verification failed.");
     } finally {
@@ -518,7 +671,7 @@ function App() {
       setSelectedThreadId(getFirstThreadId(nextWorkspace, draftForm.accountId, nextFolderId));
       resetDraftFields();
       setActiveSurface("message");
-      setActionNotice("Message submitted through SMTP.");
+      showActionNotice("Message submitted through SMTP.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message delivery failed.");
     } finally {
@@ -581,9 +734,13 @@ function App() {
               </div>
             </div>
 
-            {loadError ? <p className="inline-notice">{loadError}</p> : null}
-            {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
-            {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
+            {loadError ? <NoticeBanner message={loadError} onDismiss={() => setLoadError(null)} tone="warning" /> : null}
+            {actionError ? (
+              <NoticeBanner message={actionError} onDismiss={() => setActionError(null)} tone="critical" />
+            ) : null}
+            {actionNotice ? (
+              <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone="success" />
+            ) : null}
           </article>
 
           <div className="welcome-form">
@@ -601,9 +758,13 @@ function App() {
         <>
           {loadError || actionError || actionNotice ? (
             <section className="notice-strip">
-              {loadError ? <p className="inline-notice">{loadError}</p> : null}
-              {actionError ? <p className="inline-notice inline-notice-critical">{actionError}</p> : null}
-              {actionNotice ? <p className="inline-notice inline-notice-success">{actionNotice}</p> : null}
+              {loadError ? <NoticeBanner message={loadError} onDismiss={() => setLoadError(null)} tone="warning" /> : null}
+              {actionError ? (
+                <NoticeBanner message={actionError} onDismiss={() => setActionError(null)} tone="critical" />
+              ) : null}
+              {actionNotice ? (
+                <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone="success" />
+              ) : null}
             </section>
           ) : null}
 
@@ -651,6 +812,7 @@ function App() {
               ) : activeSurface === "settings" ? (
                 <SettingsPanel
                   environment={workspace.shellState.environment}
+                  onSignatureSaved={() => showActionNotice("Signature saved.", 2000)}
                   onVerifyAccount={(accountId) => {
                     void handleVerifyAccount(accountId);
                   }}
@@ -663,10 +825,36 @@ function App() {
                 />
               ) : (
                 <MessageReader
+                  folders={visibleFolders.map((folder) => ({ id: folder.id, name: folder.name }))}
                   loadingMessageBodyId={loadingMessageBodyId}
+                  onArchive={() => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleArchiveMessage(selectedAccount.id, readerMessage.id);
+                    }
+                  }}
                   onDelete={() => {
                     if (selectedAccount?.id && readerMessage?.id) {
                       void handleDeleteMessage(selectedAccount.id, readerMessage.id);
+                    }
+                  }}
+                  onMarkSpam={() => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleMarkSpam(selectedAccount.id, readerMessage.id);
+                    }
+                  }}
+                  onMarkUnread={() => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleMarkUnread(selectedAccount.id, readerMessage.id);
+                    }
+                  }}
+                  onMove={(targetFolderName) => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleMoveMessage(selectedAccount.id, readerMessage.id, targetFolderName);
+                    }
+                  }}
+                  onToggleFlag={(flagged) => {
+                    if (selectedAccount?.id && readerMessage?.id) {
+                      void handleToggleFlag(selectedAccount.id, readerMessage.id, flagged);
                     }
                   }}
                   onForward={() =>

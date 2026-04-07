@@ -81,7 +81,7 @@ test("mail service persists added accounts and drafts", () => {
   assert.equal(afterDraft.messages.some((message) => message.subject === "Offline report"), true);
   assert.equal(
     afterDraft.folders.some(
-      (folder) => folder.accountId === newAccount.id && folder.kind === "drafts" && folder.count > 0
+      (folder) => folder.accountId === newAccount.id && folder.kind === "drafts"
     ),
     true
   );

@@ -61,6 +61,7 @@ function MessageRow({ isSelected, message, onOpen }: MessageRowProps) {
           <span>{message.time}</span>
         </span>
         <span className="message-subject">
+          {message.flagged ? <span className="message-flagged" aria-label="Flagged message">★</span> : null}
           {message.unread ? <strong>{message.subject}</strong> : message.subject}
           {message.unread ? <span className="unread-dot" aria-hidden="true" /> : null}
         </span>
