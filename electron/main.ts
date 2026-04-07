@@ -481,23 +481,31 @@ if (process.platform === "linux") {
 }
 
 app.whenReady().then(async () => {
-  // The app name controls the Linux safeStorage namespace and the userData path.
-  // Keeping it fixed at "DejAzmach" prevents dev and packaged builds from diverging.
-  windowStateStore = createWindowStateStore(app.getPath("userData"));
-  buildApplicationMenu();
-  configureSessionPolicy();
-  mailService = new MailService({
-    userDataPath: app.getPath("userData"),
-    cipher: createCipher()
-  });
-
-  app.on("web-contents-created", (_event, contents) => {
-    contents.on("will-attach-webview", (event) => {
-      event.preventDefault();
+  try {
+    // The app name controls the Linux safeStorage namespace and the userData path.
+    // Keeping it fixed at "DejAzmach" prevents dev and packaged builds from diverging.
+    windowStateStore = createWindowStateStore(app.getPath("userData"));
+    buildApplicationMenu();
+    configureSessionPolicy();
+    mailService = new MailService({
+      userDataPath: app.getPath("userData"),
+      cipher: createCipher()
     });
-  });
 
-  ipcMain.handle("app:get-workspace-snapshot", () => requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
+    app.on("web-contents-created", (_event, contents) => {
+      contents.on("will-attach-webview", (event) => {
+        event.preventDefault();
+      });
+    });
+
+    ipcMain.handle("app:get-workspace-snapshot", async () => {
+      try {
+        return requireMailService().getWorkspaceSnapshot(createWorkspaceContext());
+      } catch (error) {
+        console.error("[ipc] app:get-workspace-snapshot error:", error);
+        return requireMailService().getWorkspaceSnapshot(createWorkspaceContext());
+      }
+    });
 
   ipcMain.handle("app:create-account", async (_event, input) => {
     try {
@@ -838,44 +846,56 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle("app:save-attachment", async (_event, input) => {
-    const result = await dialog.showSaveDialog({
-      defaultPath: input.filename
+    ipcMain.handle("app:save-attachment", async (_event, input) => {
+      try {
+        const result = await dialog.showSaveDialog({
+          defaultPath: input.filename
+        });
+
+        if (result.canceled || !result.filePath) {
+          return {
+            saved: false,
+            path: null
+          };
+        }
+
+        await fs.writeFile(result.filePath, Buffer.from(input.data, "base64"));
+        return {
+          saved: true,
+          path: result.filePath
+        };
+      } catch (error) {
+        console.error("[ipc] app:save-attachment error:", error);
+        return {
+          saved: false,
+          path: null
+        };
+      }
     });
 
-    if (result.canceled || !result.filePath) {
-      return {
-        saved: false,
-        path: null
-      };
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.dejazmach.mail");
     }
 
-    await fs.writeFile(result.filePath, Buffer.from(input.data, "base64"));
-    return {
-      saved: true,
-      path: result.filePath
-    };
-  });
+    createSplashWindow();
+    const window = createMainWindow();
+    await loadApplicationUi(window);
+    updateUnreadBadge(requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
+    restartBackgroundSyncLoop();
 
-  if (process.platform === "win32") {
-    app.setAppUserModelId("com.dejazmach.mail");
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createSplashWindow();
+        const nextWindow = createMainWindow();
+        void loadApplicationUi(nextWindow);
+      } else {
+        focusMainWindow();
+      }
+    });
+  } catch (err) {
+    console.error("[main] Fatal startup error:", err);
+    dialog.showErrorBox("DejAzmach startup error", String(err));
   }
-
-  createSplashWindow();
-  const window = createMainWindow();
-  await loadApplicationUi(window);
-  updateUnreadBadge(requireMailService().getWorkspaceSnapshot(createWorkspaceContext()));
-  restartBackgroundSyncLoop();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createSplashWindow();
-      const nextWindow = createMainWindow();
-      void loadApplicationUi(nextWindow);
-    } else {
-      focusMainWindow();
-    }
-  });
 });
 
 app.on("second-instance", () => {

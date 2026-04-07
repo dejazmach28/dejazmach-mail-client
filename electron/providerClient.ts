@@ -114,6 +114,7 @@ type Reply = {
 type ImapNode = string | null | ImapNode[];
 
 const TIMEOUT_MS = 15000;
+const INVALID_FOLDER_NAMES = new Set(["Folders", "System", "Custom", "All Folders", ""]);
 
 const getErrorCode = (error: unknown) =>
   typeof error === "object" && error && "code" in error && typeof (error as { code?: unknown }).code === "string"
@@ -199,6 +200,15 @@ const encodeQuotedPrintable = (value: string) =>
     .join("");
 
 const escapeImapString = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+const assertValidFolderName = (folderName: string) => {
+  const normalizedFolderName = folderName.trim();
+  if (INVALID_FOLDER_NAMES.has(normalizedFolderName)) {
+    throw new Error(`Invalid folder name: "${folderName}" — this is not a real IMAP folder`);
+  }
+
+  return normalizedFolderName;
+};
 
 export const parseImapStatusLine = (line: string) => {
   const match = /^\* STATUS [^(]+ \((.+)\)$/.exec(line.trim());
@@ -973,7 +983,8 @@ const getImapFetchRange = (exists: number, limit?: number) => {
 };
 
 const fetchSelectedFolderHeaders = async (socket: LineSocket, folderName: string, limit?: number) => {
-  const selectLines = await runImapCommand(socket, "I0002", `SELECT ${escapeImapString(folderName)}`);
+  const normalizedFolderName = assertValidFolderName(folderName);
+  const selectLines = await runImapCommand(socket, "I0002", `SELECT ${escapeImapString(normalizedFolderName)}`);
   const exists = parseImapExists(selectLines);
   const fetchRange = getImapFetchRange(exists, limit);
   const headerLines =
@@ -1216,10 +1227,11 @@ export const verifyAccountConnection = async (input: AccountConnectionInput): Pr
 };
 
 export const fetchImapFolderHeaders = async (input: SyncFolderInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    const { selectLines, headers } = await fetchSelectedFolderHeaders(socket, input.folderName, input.limit);
+    const { selectLines, headers } = await fetchSelectedFolderHeaders(socket, folderName, input.limit);
     const existsLine = selectLines.find((line) => /^\* \d+ EXISTS$/.test(line.trim()));
     const unseenLine = selectLines.find((line) => /^\* OK \[UNSEEN \d+\]/.test(line.trim()));
 
@@ -1234,10 +1246,11 @@ export const fetchImapFolderHeaders = async (input: SyncFolderInput) => {
 };
 
 export const fetchImapMessageBody = async (input: FetchMessageBodyInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "B0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "B0002", `SELECT ${escapeImapString(folderName)}`);
     const bodyResult = await runImapLiteralCommand(socket, "B0003", `UID FETCH ${input.uid} BODY.PEEK[]`);
     const messageLiteral = bodyResult.literals[0];
     if (!messageLiteral || messageLiteral.length === 0) {
@@ -1251,10 +1264,11 @@ export const fetchImapMessageBody = async (input: FetchMessageBodyInput) => {
 };
 
 export const markImapMessageRead = async (input: ImapMessageMutationInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "M0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "M0002", `SELECT ${escapeImapString(folderName)}`);
     await runImapCommand(socket, "M0003", `UID STORE ${input.uid} +FLAGS.SILENT (\\Seen)`);
   } finally {
     await logoutImapSocket(socket, "M0004");
@@ -1262,10 +1276,11 @@ export const markImapMessageRead = async (input: ImapMessageMutationInput) => {
 };
 
 export const markImapMessageUnread = async (input: ImapMessageMutationInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "U0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "U0002", `SELECT ${escapeImapString(folderName)}`);
     await runImapCommand(socket, "U0003", `UID STORE ${input.uid} -FLAGS.SILENT (\\Seen)`);
   } finally {
     await logoutImapSocket(socket, "U0004");
@@ -1273,10 +1288,11 @@ export const markImapMessageUnread = async (input: ImapMessageMutationInput) => 
 };
 
 export const toggleImapMessageFlag = async (input: ImapMessageMutationInput & { flagged: boolean }) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "G0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "G0002", `SELECT ${escapeImapString(folderName)}`);
     await runImapCommand(
       socket,
       "G0003",
@@ -1288,10 +1304,11 @@ export const toggleImapMessageFlag = async (input: ImapMessageMutationInput & { 
 };
 
 export const deleteImapMessage = async (input: ImapMessageMutationInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "D0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "D0002", `SELECT ${escapeImapString(folderName)}`);
     await runImapCommand(socket, "D0003", `UID STORE ${input.uid} +FLAGS.SILENT (\\Deleted)`);
     await runImapCommand(socket, "D0004", "EXPUNGE");
   } finally {
@@ -1300,10 +1317,11 @@ export const deleteImapMessage = async (input: ImapMessageMutationInput) => {
 };
 
 export const moveImapMessage = async (input: ImapMoveMessageInput) => {
+  const folderName = assertValidFolderName(input.folderName);
   const socket = await createAuthenticatedImapSocket(input);
 
   try {
-    await runImapCommand(socket, "V0002", `SELECT ${escapeImapString(input.folderName)}`);
+    await runImapCommand(socket, "V0002", `SELECT ${escapeImapString(folderName)}`);
     await runImapCommand(
       socket,
       "V0003",

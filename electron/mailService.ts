@@ -188,6 +188,8 @@ const defaultPreferences: NotificationPreferences = {
   syncIntervalMinutes: 1
 };
 
+const INVALID_FOLDER_NAMES = new Set(["Folders", "System", "Custom", "All Folders", ""]);
+
 export class MailService {
   private readonly database: DatabaseSync;
 
@@ -644,8 +646,9 @@ export class MailService {
   }
 
   getWorkspaceSnapshot(context: WorkspaceContext): WorkspaceSnapshot {
-    const accounts = this.database
-      .prepare(`
+    try {
+      const accounts = this.database
+        .prepare(`
         SELECT
           id,
           name,
@@ -665,14 +668,14 @@ export class MailService {
         FROM accounts
         ORDER BY created_at ASC
       `)
-      .all()
-      .map((account) => ({
-        ...account,
-        needsReauth: Boolean(account.needsReauth)
-      })) as WorkspaceSnapshot["accounts"];
+        .all()
+        .map((account) => ({
+          ...account,
+          needsReauth: Boolean(account.needsReauth)
+        })) as WorkspaceSnapshot["accounts"];
 
-    const folders = this.database
-      .prepare(`
+      const folders = this.database
+        .prepare(`
         SELECT
           folders.id,
           folders.account_id AS accountId,
@@ -686,10 +689,10 @@ export class MailService {
         GROUP BY folders.id, folders.account_id, folders.name, folders.kind, folders.sort_order
         ORDER BY folders.sort_order ASC, LOWER(folders.name) ASC
       `)
-      .all() as WorkspaceSnapshot["folders"];
+        .all() as WorkspaceSnapshot["folders"];
 
-    const messages = this.database
-      .prepare(`
+      const messages = this.database
+        .prepare(`
         SELECT
           id,
           thread_id AS threadId,
@@ -706,122 +709,151 @@ export class MailService {
         FROM messages
         ORDER BY created_at DESC
       `)
-      .all()
-      .map((row) => ({
-        ...row,
-        unread: Boolean(row.unread),
-        flagged: Boolean(row.flagged)
-      })) as WorkspaceSnapshot["messages"];
+        .all()
+        .map((row) => ({
+          ...row,
+          unread: Boolean(row.unread),
+          flagged: Boolean(row.flagged)
+        })) as WorkspaceSnapshot["messages"];
 
-    const messageRows = this.database
-      .prepare(`
+      const messageRows = this.database
+        .prepare(`
         SELECT *
         FROM messages
         ORDER BY created_at DESC
-      `)
-      .all() as MessageRow[];
+        `)
+        .all() as MessageRow[];
 
-    const threads = (
-      this.database
-        .prepare(`
+      const threads = (
+        this.database
+          .prepare(`
           SELECT id, subject, classification, participants_json
           FROM threads
           ORDER BY created_at DESC
-        `)
-        .all() as Array<{
-        id: string;
-        subject: string;
-        classification: string;
-        participants_json: string;
-      }>
-    ).map((thread) => ({
-      id: thread.id,
-      subject: thread.subject,
-      classification: thread.classification,
-      participants: JSON.parse(thread.participants_json) as string[],
-      messages: messageRows
-        .filter((message) => message.thread_id === thread.id)
-        .map((message) => ({
-          id: message.id,
-          sender: message.sender,
-          address: message.address,
-          sentAt: message.sent_at,
-          body: message.body,
-          html: message.html_body ?? null,
-          attachments: message.attachments_json ? (JSON.parse(message.attachments_json) as Attachment[]) : [],
-          verified: Boolean(message.verified),
-          contentMode: message.content_mode
-        }))
-    })) as WorkspaceSnapshot["threads"];
+          `)
+          .all() as Array<{
+          id: string;
+          subject: string;
+          classification: string;
+          participants_json: string;
+        }>
+      ).map((thread) => ({
+        id: thread.id,
+        subject: thread.subject,
+        classification: thread.classification,
+        participants: JSON.parse(thread.participants_json) as string[],
+        messages: messageRows
+          .filter((message) => message.thread_id === thread.id)
+          .map((message) => ({
+            id: message.id,
+            sender: message.sender,
+            address: message.address,
+            sentAt: message.sent_at,
+            body: message.body,
+            html: message.html_body ?? null,
+            attachments: message.attachments_json ? (JSON.parse(message.attachments_json) as Attachment[]) : [],
+            verified: Boolean(message.verified),
+            contentMode: message.content_mode
+          }))
+      })) as WorkspaceSnapshot["threads"];
 
-    const syncJobs = this.database
-      .prepare(`
+      const syncJobs = this.database
+        .prepare(`
         SELECT id, title, detail, status, time
         FROM sync_jobs
         ORDER BY created_at DESC
-      `)
-      .all() as WorkspaceSnapshot["syncJobs"];
+        `)
+        .all() as WorkspaceSnapshot["syncJobs"];
 
-    const transparencyLedger = this.database
-      .prepare(`
+      const transparencyLedger = this.database
+        .prepare(`
         SELECT id, title, detail, occurred_at AS occurredAt, severity
         FROM ledger_entries
         ORDER BY created_at DESC
-      `)
-      .all() as WorkspaceSnapshot["shellState"]["transparencyLedger"];
+        `)
+        .all() as WorkspaceSnapshot["shellState"]["transparencyLedger"];
 
-    return {
-      shellState: {
-        appName: "DejAzmach",
-        version: context.version,
-        platform: context.platform,
-        environment: context.environment,
-        packaged: context.packaged,
-        secureDesktopMode: true,
-        releaseTargets: createReleaseTargets(),
-        capabilities: createCapabilities(),
-        securityMetrics: [
-          {
-            label: "Renderer isolation",
-            value: "Context-isolated + sandboxed",
-            status: "active",
-            detail: "UI code stays outside Node.js and receives only preload-approved capabilities."
-          },
-          {
-            label: "Remote content",
-            value: "Blocked by default",
-            status: "active",
-            detail: "External images, trackers, and unaudited embeds stay off until a visible policy exists."
-          },
-          {
-            label: "Credential storage",
-            value: this.input.cipher.isAvailable() ? "Encrypted local vault" : "Metadata only",
-            status: this.input.cipher.isAvailable() ? "active" : "monitoring",
-            detail: this.input.cipher.isAvailable()
-              ? "Account secrets are encrypted locally before being persisted."
-              : "Electron safeStorage is unavailable in this environment, so secrets should not be trusted yet."
-          },
-          {
-            label: "Message rendering",
-            value: "Plain text by default",
-            status: "active",
-            detail: "Plain text is available immediately, and HTML can be revealed only after client-side sanitization."
-          },
-          {
-            label: "Local persistence",
-            value: "SQLite workspace store",
-            status: "active",
-            detail: "Accounts, drafts, and message metadata persist across launches in the main process."
-          }
-        ],
-        transparencyLedger
-      },
-      accounts,
-      folders,
-      messages,
-      threads,
-      syncJobs
-    };
+      return {
+        shellState: {
+          appName: "DejAzmach",
+          version: context.version,
+          platform: context.platform,
+          environment: context.environment,
+          packaged: context.packaged,
+          secureDesktopMode: true,
+          releaseTargets: createReleaseTargets(),
+          capabilities: createCapabilities(),
+          securityMetrics: [
+            {
+              label: "Renderer isolation",
+              value: "Context-isolated + sandboxed",
+              status: "active",
+              detail: "UI code stays outside Node.js and receives only preload-approved capabilities."
+            },
+            {
+              label: "Remote content",
+              value: "Blocked by default",
+              status: "active",
+              detail: "External images, trackers, and unaudited embeds stay off until a visible policy exists."
+            },
+            {
+              label: "Credential storage",
+              value: this.input.cipher.isAvailable() ? "Encrypted local vault" : "Metadata only",
+              status: this.input.cipher.isAvailable() ? "active" : "monitoring",
+              detail: this.input.cipher.isAvailable()
+                ? "Account secrets are encrypted locally before being persisted."
+                : "Electron safeStorage is unavailable in this environment, so secrets should not be trusted yet."
+            },
+            {
+              label: "Message rendering",
+              value: "Plain text by default",
+              status: "active",
+              detail: "Plain text is available immediately, and HTML can be revealed only after client-side sanitization."
+            },
+            {
+              label: "Local persistence",
+              value: "SQLite workspace store",
+              status: "active",
+              detail: "Accounts, drafts, and message metadata persist across launches in the main process."
+            }
+          ],
+          transparencyLedger
+        },
+        accounts,
+        folders,
+        messages,
+        threads,
+        syncJobs
+      };
+    } catch (error) {
+      console.error("Failed to build workspace snapshot.", error);
+      return {
+        shellState: {
+          appName: "DejAzmach",
+          version: context.version,
+          platform: context.platform,
+          environment: context.environment,
+          packaged: context.packaged,
+          secureDesktopMode: true,
+          releaseTargets: createReleaseTargets(),
+          capabilities: createCapabilities(),
+          securityMetrics: [
+            {
+              label: "Workspace database",
+              value: "Degraded",
+              status: "monitoring",
+              detail: "A database error prevented the workspace from loading fully."
+            }
+          ],
+          transparencyLedger: []
+        },
+        accounts: [],
+        folders: [],
+        messages: [],
+        threads: [],
+        syncJobs: []
+      };
+    }
   }
 
   private getAccountRecord(accountId: string) {
@@ -1423,25 +1455,31 @@ export class MailService {
   }
 
   listAccountsForSync() {
-    return this.database
-      .prepare(
-        `
+    try {
+      return this.database
+        .prepare(
+          `
           SELECT id, address, needs_reauth AS needsReauth
           FROM accounts
           ORDER BY created_at ASC
-        `
-      )
-      .all()
-      .map((account) => ({
-        ...account,
-        needsReauth: Boolean(account.needsReauth)
-      })) as Array<{ id: string; address: string; needsReauth: boolean }>;
+          `
+        )
+        .all()
+        .map((account) => ({
+          ...account,
+          needsReauth: Boolean(account.needsReauth)
+        })) as Array<{ id: string; address: string; needsReauth: boolean }>;
+    } catch (error) {
+      console.error("Failed to list accounts for sync.", error);
+      return [];
+    }
   }
 
   getPreferences(): NotificationPreferences {
-    const row = this.database
-      .prepare(
-        `
+    try {
+      const row = this.database
+        .prepare(
+          `
           SELECT
             desktop_notifications AS desktopNotifications,
             sound_alert AS soundAlert,
@@ -1449,29 +1487,33 @@ export class MailService {
             sync_interval_minutes AS syncIntervalMinutes
           FROM preferences
           WHERE id = 1
-        `
-      )
-      .get() as
-      | {
-          desktopNotifications: number;
-          soundAlert: number;
-          badgeCount: number;
-          syncIntervalMinutes: number;
-        }
-      | undefined;
+          `
+        )
+        .get() as
+        | {
+            desktopNotifications: number;
+            soundAlert: number;
+            badgeCount: number;
+            syncIntervalMinutes: number;
+          }
+        | undefined;
 
-    if (!row) {
+      if (!row) {
+        return defaultPreferences;
+      }
+
+      return {
+        desktopNotifications: Boolean(row.desktopNotifications),
+        soundAlert: Boolean(row.soundAlert),
+        badgeCount: Boolean(row.badgeCount),
+        syncIntervalMinutes: [1, 5, 15, 30, 60].includes(row.syncIntervalMinutes)
+          ? (row.syncIntervalMinutes as NotificationPreferences["syncIntervalMinutes"])
+          : 1
+      };
+    } catch (error) {
+      console.error("Failed to load notification preferences.", error);
       return defaultPreferences;
     }
-
-    return {
-      desktopNotifications: Boolean(row.desktopNotifications),
-      soundAlert: Boolean(row.soundAlert),
-      badgeCount: Boolean(row.badgeCount),
-      syncIntervalMinutes: [1, 5, 15, 30, 60].includes(row.syncIntervalMinutes)
-        ? (row.syncIntervalMinutes as NotificationPreferences["syncIntervalMinutes"])
-        : 1
-    };
   }
 
   setPreferences(input: NotificationPreferences) {
@@ -1544,12 +1586,17 @@ export class MailService {
     context: WorkspaceContext,
     options?: { recordActivity?: boolean }
   ): Promise<FolderSyncResult> {
+    const normalizedFolderName = input.folderName.trim();
+    if (INVALID_FOLDER_NAMES.has(normalizedFolderName)) {
+      throw new Error(`Invalid folder name: "${input.folderName}" — this is not a real IMAP folder`);
+    }
+
     const account = this.requireAuthenticatedAccount(input.accountId);
     const folderRecord =
-      this.findFolderRecord(input.accountId, input.folderName) ??
+      this.findFolderRecord(input.accountId, normalizedFolderName) ??
       ({
-        id: this.ensureFolder(input.accountId, input.folderName, "custom", "remote"),
-        name: input.folderName,
+        id: this.ensureFolder(input.accountId, normalizedFolderName, "custom", "remote"),
+        name: normalizedFolderName,
         kind: "custom" as const
       });
     const recordActivity = options?.recordActivity ?? true;
@@ -1561,7 +1608,7 @@ export class MailService {
         incomingServer: account.incomingServer,
         incomingPort: account.incomingPort,
         incomingSecurity: account.incomingSecurity,
-        folderName: input.folderName,
+        folderName: normalizedFolderName,
         limit: input.limit
       });
 
@@ -1571,16 +1618,16 @@ export class MailService {
         .run("online", `Synced ${displayTime()}`, input.accountId);
 
       if (recordActivity) {
-        this.addSyncJob(`Folder sync for ${account.address}`, `${input.folderName} refreshed from IMAP.`, "complete");
+        this.addSyncJob(`Folder sync for ${account.address}`, `${normalizedFolderName} refreshed from IMAP.`, "complete");
         this.addLedgerEntry(
           "Folder sync completed",
-          `${account.address} refreshed ${input.folderName} and stored ${summary.headers.length} headers locally.`,
+          `${account.address} refreshed ${normalizedFolderName} and stored ${summary.headers.length} headers locally.`,
           "info"
         );
       } else if (newMessages.length > 0) {
         this.addLedgerEntry(
           "Background inbox sync completed",
-          `${account.address} received ${newMessages.length} new message${newMessages.length === 1 ? "" : "s"} in ${input.folderName}.`,
+          `${account.address} received ${newMessages.length} new message${newMessages.length === 1 ? "" : "s"} in ${normalizedFolderName}.`,
           "notice"
         );
       }

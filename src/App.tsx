@@ -905,7 +905,7 @@ function App() {
 
             <MessageList
               accountId={selectedAccount?.id}
-              folderName={selectedFolder?.name ?? "Folders"}
+              folderName={selectedFolder?.name ?? ""}
               isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
               messages={visibleMessages}
               onOpenMessage={openMessage}

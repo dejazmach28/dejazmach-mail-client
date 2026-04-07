@@ -186,6 +186,11 @@ dt {
   justify-content: space-between;
 }
 
+.sidebar-section-header-static,
+.folder-parent-static {
+  pointer-events: none;
+}
+
 .account-stack,
 .folder-stack {
   display: flex;

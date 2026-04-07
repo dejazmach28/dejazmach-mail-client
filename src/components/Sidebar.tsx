@@ -188,7 +188,13 @@ export function Sidebar({
       </button>
 
       <section className="sidebar-section">
-        <div className="sidebar-section-header">
+        <div
+          className="sidebar-section-header sidebar-section-header-static"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
           <span className="eyebrow eyebrow-inverse">Accounts</span>
         </div>
 
@@ -232,7 +238,13 @@ export function Sidebar({
       <section className="sidebar-section sidebar-section-grow">
         {folders.length > 0 ? (
           <>
-            <div className="sidebar-section-header">
+            <div
+              className="sidebar-section-header sidebar-section-header-static"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
               <span className="eyebrow eyebrow-inverse">Folders</span>
             </div>
             <div className="folder-stack">
@@ -257,7 +269,14 @@ export function Sidebar({
 
               {customFolderItems.map((item) =>
                 item.type === "parent" ? (
-                  <div className="folder-parent" key={item.key}>
+                  <div
+                    className="folder-parent folder-parent-static"
+                    key={item.key}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                  >
                     <span className="folder-parent-chevron" aria-hidden="true">
                       ▾
                     </span>
