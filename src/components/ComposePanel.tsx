@@ -44,6 +44,16 @@ const stripHtmlToPlainText = (html: string) =>
 
 const looksLikeHtml = (value: string) => /<[^>]+>/.test(value);
 
+const isEffectivelyEmptyHtml = (value?: string) =>
+  !value ||
+  value
+    .replace(/<p><\/p>/gi, "")
+    .replace(/<p><br><\/p>/gi, "")
+    .replace(/<br\s*\/?>/gi, "")
+    .replace(/&nbsp;/gi, "")
+    .replace(/\s+/g, "")
+    .length === 0;
+
 export function ComposePanel({
   accounts,
   draftForm,
@@ -57,9 +67,19 @@ export function ComposePanel({
   const [showCc, setShowCc] = useState(Boolean(draftForm.cc));
   const [showBcc, setShowBcc] = useState(Boolean(draftForm.bcc));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const signatureInjectedForAccountRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!window.desktopApi || !draftForm.accountId || draftForm.body.trim() || draftForm.htmlBody?.trim()) {
+    const hasPlainContent = draftForm.body.trim().length > 0;
+    const hasHtmlContent = !isEffectivelyEmptyHtml(draftForm.htmlBody);
+
+    if (
+      !window.desktopApi ||
+      !draftForm.accountId ||
+      hasPlainContent ||
+      hasHtmlContent ||
+      signatureInjectedForAccountRef.current === draftForm.accountId
+    ) {
       return;
     }
 
@@ -69,8 +89,9 @@ export function ComposePanel({
       }
 
       const signature = result.data.body.trim();
+      signatureInjectedForAccountRef.current = draftForm.accountId;
       if (looksLikeHtml(signature)) {
-        const htmlSignature = `<p></p><p></p><p>-- </p>${signature}`;
+        const htmlSignature = `<p><br /></p><p><br /></p><div class="signature-divider">-- </div>${signature}`;
         onFieldChange("htmlBody", htmlSignature);
         onFieldChange("body", `\n\n-- \n${stripHtmlToPlainText(signature)}`);
         return;

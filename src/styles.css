@@ -575,6 +575,24 @@ textarea { resize: vertical; }
   flex-shrink: 0;
 }
 
+.message-pane-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pane-syncing-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: var(--r-full);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--blue);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 /* Message list */
 .message-list {
   flex: 1;
@@ -589,7 +607,7 @@ textarea { resize: vertical; }
    ================================================================ */
 .message-row {
   display: grid;
-  grid-template-columns: 6px 38px minmax(0, 1fr);
+  grid-template-columns: 6px 22px 38px minmax(0, 1fr);
   gap: 11px;
   align-items: center;
   width: 100%;
@@ -601,6 +619,7 @@ textarea { resize: vertical; }
   color: var(--text);
   text-align: left;
   transition: background var(--dur) var(--ease);
+  cursor: pointer;
 }
 
 .message-row:hover { background: var(--bg-subtle); }
@@ -617,6 +636,10 @@ textarea { resize: vertical; }
 .message-row-selected {
   background: var(--blue-subtle) !important;
   border-left-color: var(--blue);
+}
+
+.message-row-batch-selected {
+  background: rgba(59, 130, 246, 0.08);
 }
 
 /* Skeleton row */
@@ -647,6 +670,31 @@ textarea { resize: vertical; }
   border-radius: 50%;
   background: var(--blue);
   flex-shrink: 0;
+}
+
+.message-select-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--blue);
+  font-size: 0.72rem;
+  font-weight: 700;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.message-select-toggle:hover {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.message-select-toggle-active {
+  border-color: rgba(59, 130, 246, 0.55);
+  background: rgba(59, 130, 246, 0.14);
 }
 
 /* Message copy layout */
@@ -729,6 +777,20 @@ textarea { resize: vertical; }
 /* Sort control */
 .sort-control { display: flex; align-items: center; gap: 4px; }
 
+.message-selection-chip {
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: var(--r-full);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--blue);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.message-selection-chip:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+
 .sort-select {
   appearance: none;
   background: transparent;
@@ -755,6 +817,38 @@ textarea { resize: vertical; }
   margin-top: 2px;
   font-size: 0.75rem;
   color: var(--text-faint);
+}
+
+.message-context-menu {
+  position: fixed;
+  z-index: 160;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+}
+
+.message-context-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.message-context-menu button:hover {
+  background: var(--bg-inset);
+}
+
+.message-context-menu-danger {
+  color: #dc2626 !important;
 }
 
 /* ================================================================
@@ -1088,6 +1182,15 @@ textarea { resize: vertical; }
 .html-email-body img { max-width: 100%; height: auto; }
 .html-email-body a { color: var(--blue); }
 .html-email-body p { margin: 0 0 10px 0; }
+
+.html-email-frame {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: #fff;
+}
 
 /* Inline reply row at end of thread */
 .thread-inline-reply {
@@ -1525,6 +1628,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   align-items: center;
 }
 
+.signature-editor-field {
+  display: grid;
+  gap: 8px;
+}
+
 .signature-preview-shell {
   display: grid;
   gap: 8px;
@@ -1547,6 +1655,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .signature-preview img {
   max-width: 100%;
   height: auto;
+}
+
+.signature-source-textarea {
+  min-height: 280px;
 }
 
 /* ================================================================

@@ -30,6 +30,18 @@ const initialAccountForm: CreateAccountInput = {
   outgoingAuthMethod: "auto"
 };
 
+const createEmptyDraftForm = (accountId = ""): CreateDraftInput => ({
+  accountId,
+  to: "",
+  cc: "",
+  bcc: "",
+  subject: "",
+  body: "",
+  htmlBody: "",
+  attachments: [],
+  replyToMessageId: undefined
+});
+
 const emptyWorkspace: WorkspaceSnapshot = {
   shellState: {
     appName: "DejAzmach",
@@ -233,11 +245,7 @@ function App() {
   const [draggingPane, setDraggingPane] = useState<"sidebar" | "list" | null>(null);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
-    accountId: "",
-    to: "",
-    cc: "",
-    subject: "",
-    body: ""
+    ...createEmptyDraftForm("")
   });
 
   // Refs to always have the latest selection IDs when applyWorkspace is called inside async callbacks.
@@ -518,14 +526,7 @@ function App() {
   };
 
   const resetDraftFields = () => {
-    setDraftForm((currentDraft) => ({
-      ...currentDraft,
-      to: "",
-      cc: "",
-      subject: "",
-      body: "",
-      replyToMessageId: undefined
-    }));
+    setDraftForm((currentDraft) => createEmptyDraftForm(currentDraft.accountId));
   };
 
   const chooseAccount = (accountId: string) => {
@@ -558,11 +559,11 @@ function App() {
     accountId = selectedAccount?.id ?? workspace.accounts[0]?.id ?? "",
     overrides: Partial<CreateDraftInput> = {}
   ) => {
-    setDraftForm((currentDraft) => ({
-      ...currentDraft,
-      accountId,
-      ...overrides
-    }));
+    setDraftForm({
+      ...createEmptyDraftForm(accountId),
+      ...overrides,
+      accountId
+    });
     setActiveSurface("compose");
     setMobilePanel("reader");
   };
@@ -728,6 +729,38 @@ function App() {
       showActionNotice("Message moved to spam.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Mark spam failed.");
+    }
+  };
+
+  const runBatchMessageAction = async (
+    messageIds: string[],
+    executor: (accountId: string, messageId: string) => Promise<ActionResult<WorkspaceSnapshot>>,
+    successMessage: string
+  ) => {
+    if (!window.desktopApi || !selectedAccount?.id || messageIds.length === 0) {
+      return;
+    }
+
+    setActionError(null);
+    setActionNotice(null);
+
+    try {
+      let nextWorkspace: WorkspaceSnapshot | null = null;
+      for (const messageId of Array.from(new Set(messageIds))) {
+        const result = await executor(selectedAccount.id, messageId);
+        if (result.data) {
+          nextWorkspace = result.data;
+        }
+        unwrapResult(result);
+      }
+
+      if (nextWorkspace) {
+        applyWorkspace(nextWorkspace);
+      }
+
+      showActionNotice(successMessage);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Message action failed.");
     }
   };
 
@@ -1075,6 +1108,34 @@ function App() {
               isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
               isLoadingFolder={autoSyncingFolderKey === selectedFolderKey && folderMessages.length === 0}
               messages={visibleMessages}
+              onArchiveSelection={(messageIds) =>
+                runBatchMessageAction(
+                  messageIds,
+                  async (accountId, messageId) => window.desktopApi!.archiveMessage({ accountId, messageId }),
+                  messageIds.length === 1 ? "Message archived." : `${messageIds.length} messages archived.`
+                )
+              }
+              onDeleteSelection={(messageIds) =>
+                runBatchMessageAction(
+                  messageIds,
+                  async (accountId, messageId) => window.desktopApi!.deleteMessage({ accountId, messageId }),
+                  messageIds.length === 1 ? "Message deleted." : `${messageIds.length} messages deleted.`
+                )
+              }
+              onMarkSpamSelection={(messageIds) =>
+                runBatchMessageAction(
+                  messageIds,
+                  async (accountId, messageId) => window.desktopApi!.markSpam({ accountId, messageId }),
+                  messageIds.length === 1 ? "Message moved to spam." : `${messageIds.length} messages moved to spam.`
+                )
+              }
+              onMarkUnreadSelection={(messageIds) =>
+                runBatchMessageAction(
+                  messageIds,
+                  async (accountId, messageId) => window.desktopApi!.markUnread({ accountId, messageId }),
+                  messageIds.length === 1 ? "Message marked unread." : `${messageIds.length} messages marked unread.`
+                )
+              }
               onOpenMessage={openMessage}
               onShowSidebar={() => setMobilePanel("sidebar")}
               onSearchQueryChange={setSearchQuery}

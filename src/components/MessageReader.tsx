@@ -1,4 +1,3 @@
-import DOMPurify from "dompurify";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, MailSummary, ThreadDetail } from "../../shared/contracts.js";
 
@@ -26,12 +25,101 @@ const getInitials = (value: string) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "M";
 
-const sanitizeHtml = (html: string): string =>
-  DOMPurify.sanitize(html, {
-    FORBID_TAGS: ["style", "script", "iframe", "form", "input", "button", "link"],
-    FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
-    FORCE_BODY: true
-  });
+const sanitizeHtmlForFrame = (html: string): string =>
+  html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
+    .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, "")
+    .replace(/<embed\b[^>]*>/gi, "")
+    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "")
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, "")
+    .replace(/javascript:/gi, "blocked:");
+
+const buildHtmlDocument = (html: string) => `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base target="_blank" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        color: #111827;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+      body {
+        padding: 0;
+        overflow-wrap: anywhere;
+      }
+      img, table {
+        max-width: 100%;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      a {
+        color: #2563eb;
+      }
+    </style>
+  </head>
+  <body>${sanitizeHtmlForFrame(html)}</body>
+</html>`;
+
+function HtmlMessageFrame({ documentMarkup }: { documentMarkup: string }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [frameHeight, setFrameHeight] = useState(360);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) {
+      return;
+    }
+
+    const syncHeight = () => {
+      try {
+        const doc = frame.contentDocument;
+        if (!doc) {
+          return;
+        }
+
+        const nextHeight = Math.max(
+          doc.documentElement?.scrollHeight ?? 0,
+          doc.body?.scrollHeight ?? 0,
+          360
+        );
+
+        setFrameHeight(Math.min(nextHeight + 8, 2200));
+      } catch {
+        setFrameHeight(640);
+      }
+    };
+
+    const handleLoad = () => {
+      window.setTimeout(syncHeight, 20);
+    };
+
+    frame.addEventListener("load", handleLoad);
+    handleLoad();
+
+    return () => {
+      frame.removeEventListener("load", handleLoad);
+    };
+  }, [documentMarkup]);
+
+  return (
+    <iframe
+      className="html-email-frame body-fade-in"
+      ref={frameRef}
+      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+      srcDoc={documentMarkup}
+      style={{ height: `${frameHeight}px` }}
+      title="Formatted email body"
+    />
+  );
+}
 
 const formatAttachmentSize = (size: number) => {
   if (size >= 1024 * 1024) {
@@ -107,7 +195,7 @@ export function MessageReader({
     () =>
       (thread?.messages ?? []).reduce<Record<string, string>>((accumulator, message) => {
         if (message.html) {
-          accumulator[message.id] = sanitizeHtml(message.html);
+          accumulator[message.id] = buildHtmlDocument(message.html);
         }
         return accumulator;
       }, {}),
@@ -264,10 +352,7 @@ export function MessageReader({
                 <span className="html-spinner" aria-hidden="true" />
               </div>
             ) : message.html && messageViewMode[message.id] === "html" ? (
-              <div
-                className="html-email-body body-fade-in"
-                dangerouslySetInnerHTML={{ __html: readerHtmlChoices[message.id] ?? "" }}
-              />
+              <HtmlMessageFrame documentMarkup={readerHtmlChoices[message.id] ?? ""} />
             ) : (
               <pre className="thread-body body-fade-in">{message.body}</pre>
             )}
