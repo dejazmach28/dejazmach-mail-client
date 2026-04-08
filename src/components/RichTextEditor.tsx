@@ -1,4 +1,5 @@
 import { EditorContent, useEditor } from "@tiptap/react";
+import Link from "@tiptap/extension-link";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import { useEffect } from "react";
@@ -35,6 +36,7 @@ export function RichTextEditor({ value, onChange }: RichTextEditorProps) {
         codeBlock: {},
       }),
       Underline,
+      Link.configure({ openOnClick: false }),
     ],
     content: value,
     onUpdate({ editor: ed }) {
@@ -84,6 +86,23 @@ export function RichTextEditor({ value, onChange }: RichTextEditorProps) {
         <span className="rte-sep" />
         {btn("≡", editor.isActive("bulletList"), () => editor.chain().focus().toggleBulletList().run(), "Bullet list")}
         {btn("1.", editor.isActive("orderedList"), () => editor.chain().focus().toggleOrderedList().run(), "Numbered list")}
+        <span className="rte-sep" />
+        {btn(
+          "🔗",
+          editor.isActive("link"),
+          () => {
+            if (editor.isActive("link")) {
+              editor.chain().focus().unsetLink().run();
+              return;
+            }
+
+            const url = window.prompt("Enter URL:");
+            if (url?.trim()) {
+              editor.chain().focus().setLink({ href: url.trim() }).run();
+            }
+          },
+          "Link"
+        )}
         <span className="rte-sep" />
         {btn("❝", editor.isActive("blockquote"), () => editor.chain().focus().toggleBlockquote().run(), "Blockquote")}
         {btn("<>", editor.isActive("code"), () => editor.chain().focus().toggleCode().run(), "Inline code")}

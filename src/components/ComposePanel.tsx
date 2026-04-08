@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { AccountSummary, Attachment, CreateDraftInput } from "../../shared/contracts.js";
-import { RichTextEditor } from "./RichTextEditor.js";
+
+const RichTextEditor = lazy(async () => {
+  const module = await import("./RichTextEditor.js");
+  return { default: module.RichTextEditor };
+});
 
 type ComposePanelProps = {
   accounts: AccountSummary[];
@@ -155,13 +159,15 @@ export function ComposePanel({
 
           <div className="field field-full compose-body-field">
             <span>Body</span>
-            <RichTextEditor
-              value={draftForm.htmlBody ?? draftForm.body}
-              onChange={(html, plain) => {
-                onFieldChange("htmlBody", html);
-                onFieldChange("body", plain);
-              }}
-            />
+            <Suspense fallback={<textarea placeholder="Loading editor..." rows={12} value={draftForm.body} readOnly />}>
+              <RichTextEditor
+                value={draftForm.htmlBody ?? draftForm.body}
+                onChange={(html, plain) => {
+                  onFieldChange("htmlBody", html);
+                  onFieldChange("body", plain);
+                }}
+              />
+            </Suspense>
           </div>
 
           {/* Attachments */}

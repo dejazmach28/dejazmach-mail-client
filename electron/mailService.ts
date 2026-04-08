@@ -15,6 +15,7 @@ import type {
   SmtpAuthMethod,
   ToggleFlagInput,
   TransportSecurity,
+  SendMessageInput,
   UpdateAccountDisplayNameInput,
   UpdateAccountImapInput,
   UpdateAccountSmtpInput,
@@ -1752,7 +1753,7 @@ export class MailService {
     }
   }
 
-  async sendMessage(input: CreateDraftInput, context: WorkspaceContext) {
+  async sendMessage(input: SendMessageInput, context: WorkspaceContext) {
     const account = this.requireAuthenticatedAccount(input.accountId);
     const subject = input.subject.trim() || "No subject";
     const body = input.body.trim();
@@ -1776,7 +1777,7 @@ export class MailService {
         outgoingAuthMethod: account.outgoingAuthMethod,
         to: input.to.trim(),
         cc: input.cc?.trim(),
-        bcc: input.bcc?.trim(),
+        bcc: input.bcc?.filter(Boolean),
         subject,
         body,
         htmlBody: input.htmlBody,

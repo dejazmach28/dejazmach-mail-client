@@ -4,6 +4,7 @@ import type {
   CreateAccountInput,
   CreateDraftInput,
   FetchMessageBodyResult,
+  SendMessageInput,
   WorkspaceSnapshot
 } from "../shared/contracts.js";
 import { ComposePanel } from "./components/ComposePanel.js";
@@ -130,6 +131,12 @@ const quoteBody = (body: string) =>
 
 const buildQuotedReplyBody = (sentAt: string, sender: string, body: string) =>
   `\n\n> On ${sentAt}, ${sender} wrote:\n${quoteBody(body)}`;
+
+const splitAddresses = (value?: string) =>
+  (value ?? "")
+    .split(/[;,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 
 const applyFetchedMessageBody = (
   workspace: WorkspaceSnapshot,
@@ -796,7 +803,11 @@ function App() {
     setIsSendingMessage(true);
 
     try {
-      const result = await window.desktopApi.sendMessage(draftForm);
+      const sendInput: SendMessageInput = {
+        ...draftForm,
+        bcc: splitAddresses(draftForm.bcc)
+      };
+      const result = await window.desktopApi.sendMessage(sendInput);
       if (result.data) {
         applyWorkspace(result.data);
       }

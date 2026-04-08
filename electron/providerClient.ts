@@ -62,7 +62,7 @@ export type SendMessageInput = {
   outgoingAuthMethod: SmtpAuthMethod;
   to: string;
   cc?: string;
-  bcc?: string;
+  bcc?: string[];
   subject: string;
   body: string;
   htmlBody?: string;
@@ -526,12 +526,17 @@ export const parseSmtpCapabilities = (reply: Reply) =>
 const generateBoundary = () =>
   `----=_Part_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
+const sanitizeOutgoingHtml = (html: string): string =>
+  html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "")
+    .replace(/javascript:/gi, "blocked:");
+
 export const buildPlainTextMessage = ({
   fromAddress,
   fromName,
   to,
   cc,
-  bcc,
   subject,
   body,
   htmlBody,
@@ -543,7 +548,6 @@ export const buildPlainTextMessage = ({
   fromName: string;
   to: string;
   cc?: string;
-  bcc?: string;
   subject: string;
   body: string;
   htmlBody?: string;
@@ -559,7 +563,6 @@ export const buildPlainTextMessage = ({
     `From: ${fromHeader}`,
     `To: ${to}`,
     ...(cc?.trim() ? [`Cc: ${cc.trim()}`] : []),
-    ...(bcc?.trim() ? [`Bcc: ${bcc.trim()}`] : []),
     `Subject: ${subject || "No subject"}`,
     `Message-ID: ${messageId}`,
     `Date: ${new Date().toUTCString()}`,
@@ -568,8 +571,12 @@ export const buildPlainTextMessage = ({
     "MIME-Version: 1.0",
   ];
 
-  const plainEncoded = encodeQuotedPrintable(normalizePlainText(body || ""));
-  const hasHtml = Boolean(htmlBody?.trim());
+  const sanitizedHtmlBody = htmlBody?.trim() ? sanitizeOutgoingHtml(htmlBody) : undefined;
+  const normalizedPlainBody = normalizePlainText(
+    sanitizedHtmlBody ? stripHtmlTags(sanitizedHtmlBody).trim() || body || "" : body || ""
+  );
+  const plainEncoded = encodeQuotedPrintable(normalizedPlainBody);
+  const hasHtml = Boolean(sanitizedHtmlBody?.trim());
   const hasAttachments = Boolean(attachments?.length);
 
   // Simple plain text — no HTML, no attachments
@@ -594,7 +601,7 @@ export const buildPlainTextMessage = ({
       ].join("\r\n");
     }
     const altBoundary = generateBoundary();
-    const htmlEncoded = encodeQuotedPrintable(htmlBody!);
+    const htmlEncoded = encodeQuotedPrintable(sanitizedHtmlBody!);
     return [
       `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
       "",
@@ -1509,7 +1516,11 @@ export const sendPlainTextMessage = async (input: SendMessageInput) => {
     reply = await socket.readReply();
     assertSmtpReply(reply, 250, "SMTP MAIL FROM");
 
-    for (const recipient of [...parseAddressList(input.to), ...parseAddressList(input.cc ?? "")]) {
+    for (const recipient of [
+      ...parseAddressList(input.to),
+      ...parseAddressList(input.cc ?? ""),
+      ...(input.bcc ?? [])
+    ]) {
       socket.write(`RCPT TO:<${recipient}>\r\n`);
       reply = await socket.readReply();
       assertSmtpReply(reply, 250, "SMTP RCPT TO");

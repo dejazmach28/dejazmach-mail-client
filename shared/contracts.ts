@@ -166,6 +166,10 @@ export type CreateDraftInput = {
   replyToMessageId?: string;
 };
 
+export type SendMessageInput = Omit<CreateDraftInput, "bcc"> & {
+  bcc?: string[];
+};
+
 export type FetchMessageBodyInput = {
   accountId: string;
   messageId: string;
@@ -264,7 +268,7 @@ export type DesktopApi = {
   createAccount: (input: CreateAccountInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   createDraft: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   verifyAccount: (accountId: string) => Promise<ActionResult<WorkspaceSnapshot>>;
-  sendMessage: (input: CreateDraftInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  sendMessage: (input: SendMessageInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   fetchMessageBody: (input: FetchMessageBodyInput) => Promise<ActionResult<FetchMessageBodyResult>>;
   syncFolder: (input: SyncFolderInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   deleteMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;

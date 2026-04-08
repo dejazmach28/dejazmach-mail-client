@@ -11,6 +11,29 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/react") || id.includes("node_modules/react-dom")) {
+            return "vendor-react";
+          }
+
+          if (id.includes("node_modules/dompurify")) {
+            return "vendor-dompurify";
+          }
+
+          if (id.includes("node_modules/prosemirror") || id.includes("node_modules/@tiptap/pm/")) {
+            return "vendor-prosemirror";
+          }
+
+          if (id.includes("node_modules/@tiptap/")) {
+            return "vendor-tiptap";
+          }
+
+          return undefined;
+        }
+      }
+    }
   }
 });

@@ -44,6 +44,8 @@ test("parseImapFetchEnvelope extracts inbox header fields", () => {
       subject: "Weekly report",
       fromName: "Jane Sender",
       fromAddress: "jane@example.com",
+      to: "",
+      cc: "",
       date: "Mon, 01 Apr 2024 10:00:00 +0000",
       flags: ["\\Seen"],
       unread: false,

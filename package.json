@@ -4,6 +4,10 @@
   "private": true,
   "description": "DejAzmach desktop mail client with a transparent, security-first UI.",
   "homepage": "https://dejazmach.app",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:dejazmach28/dejazmach-mail-client.git"
+  },
   "author": {
     "name": "DejAzmach",
     "email": "hello@dejazmach.app"
@@ -87,7 +91,7 @@
       ]
     },
     "mac": {
-      "icon": "assets/icons/512x512.png",
+      "icon": "assets/icons/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -107,6 +111,14 @@
       "category": "public.app-category.productivity",
       "hardenedRuntime": true
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dejazmach28",
+        "repo": "dejazmach-mail-client",
+        "releaseType": "draft"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "perMachine": false,
@@ -115,6 +127,7 @@
   },
   "dependencies": {
     "@tiptap/extension-underline": "^3.22.2",
+    "@tiptap/extension-link": "^3.22.2",
     "@tiptap/pm": "^3.22.2",
     "@tiptap/react": "^3.22.2",
     "@tiptap/starter-kit": "^3.22.2",
