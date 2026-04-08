@@ -1,6 +1,6 @@
 {
   "name": "dejazmach-mail-client",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "description": "DejAzmach desktop mail client with a transparent, security-first UI.",
   "homepage": "https://dejazmach.app",

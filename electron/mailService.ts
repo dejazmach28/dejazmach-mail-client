@@ -107,8 +107,13 @@ const displayTime = () =>
     hour12: false
   }).format(new Date());
 
+const FALLBACK_SECRET_PREFIX = "plain:";
+
 const makeId = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const serializeFallbackSecret = (password: string) =>
+  Buffer.from(`${FALLBACK_SECRET_PREFIX}${JSON.stringify({ password })}`, "utf8");
 
 const textPreview = (value: string) =>
   value
@@ -928,23 +933,33 @@ export class MailService {
       return null;
     }
 
-    if (!this.input.cipher.isAvailable()) {
-      throw new Error("The operating system vault is unavailable, so this account cannot be verified safely.");
+    let secretPayload: { password?: string } | null = null;
+    const storedSecretBuffer = Buffer.isBuffer(record.encryptedSecret)
+      ? record.encryptedSecret
+      : Buffer.from(record.encryptedSecret);
+    const rawSecret = storedSecretBuffer.toString("utf8");
+    if (rawSecret.startsWith(FALLBACK_SECRET_PREFIX)) {
+      secretPayload = JSON.parse(rawSecret.slice(FALLBACK_SECRET_PREFIX.length)) as { password?: string };
+    } else {
+      if (!this.input.cipher.isAvailable()) {
+        throw new Error("The operating system vault is unavailable, so this account password cannot be unlocked in this environment.");
+      }
+
+      const decryptedSecret = this.input.cipher.decryptString(storedSecretBuffer);
+      if (!decryptedSecret) {
+        this.clearStoredPassword(accountId);
+        this.markNeedsReauth(accountId);
+        this.addLedgerEntry(
+          "Account requires re-authentication",
+          `${record.address} could not be decrypted from the local vault and must be set up again.`,
+          "critical"
+        );
+        return null;
+      }
+
+      secretPayload = JSON.parse(decryptedSecret) as { password?: string };
     }
 
-    const decryptedSecret = this.input.cipher.decryptString(record.encryptedSecret);
-    if (!decryptedSecret) {
-      this.clearStoredPassword(accountId);
-      this.markNeedsReauth(accountId);
-      this.addLedgerEntry(
-        "Account requires re-authentication",
-        `${record.address} could not be decrypted from the local vault and must be set up again.`,
-        "critical"
-      );
-      return null;
-    }
-
-    const secretPayload = JSON.parse(decryptedSecret) as { password?: string };
     if (!secretPayload.password) {
       throw new Error("Stored account secret is invalid.");
     }
@@ -980,12 +995,10 @@ export class MailService {
     if (!account) {
       throw new Error("Unknown account.");
     }
-
-    if (!this.input.cipher.isAvailable()) {
-      throw new Error("The operating system vault is unavailable, so this account cannot be stored safely.");
-    }
-
-    const encryptedSecret = this.input.cipher.encryptString(JSON.stringify({ password }));
+    const vaultAvailable = this.input.cipher.isAvailable();
+    const encryptedSecret = vaultAvailable
+      ? this.input.cipher.encryptString(JSON.stringify({ password }))
+      : serializeFallbackSecret(password);
     this.database
       .prepare(
         `
@@ -996,8 +1009,8 @@ export class MailService {
       )
       .run(accountId, encryptedSecret, nowIso());
     this.database
-      .prepare("UPDATE accounts SET needs_reauth = 0, status = ?, last_sync = ? WHERE id = ?")
-      .run("syncing", "Re-authenticating...", accountId);
+      .prepare("UPDATE accounts SET needs_reauth = 0, status = ?, last_sync = ?, storage = ? WHERE id = ?")
+      .run("syncing", "Re-authenticating...", vaultAvailable ? "OS vault" : "Local fallback", accountId);
 
     return this.getWorkspaceSnapshot(context);
   }
@@ -1371,7 +1384,8 @@ export class MailService {
   createAccount(input: CreateAccountInput, context: WorkspaceContext): WorkspaceSnapshot {
     const accountId = makeId("account");
     const createdAt = nowIso();
-    const storage = this.input.cipher.isAvailable() ? "OS vault" : "Metadata only";
+    const vaultAvailable = this.input.cipher.isAvailable();
+    const storage = vaultAvailable ? "OS vault" : "Local fallback";
 
     this.database
       .prepare(`
@@ -1401,12 +1415,14 @@ export class MailService {
         createdAt
       );
 
-    if (this.input.cipher.isAvailable() && input.password) {
+    if (input.password) {
       this.database
         .prepare("INSERT INTO account_secrets (account_id, encrypted_secret, created_at) VALUES (?, ?, ?)")
         .run(
           accountId,
-          this.input.cipher.encryptString(JSON.stringify({ password: input.password })),
+          vaultAvailable
+            ? this.input.cipher.encryptString(JSON.stringify({ password: input.password }))
+            : serializeFallbackSecret(input.password),
           createdAt
         );
     }
@@ -1416,9 +1432,9 @@ export class MailService {
       .run(
         makeId("ledger"),
         "Account added to local workspace",
-        `${input.address} was stored in the main-process account registry. ${this.input.cipher.isAvailable() ? "Secret material was encrypted before persistence." : "Secret material was not encrypted because the vault is unavailable."}`,
+        `${input.address} was stored in the main-process account registry. ${vaultAvailable ? "Secret material was encrypted with the OS vault before persistence." : "The OS vault is unavailable in this environment, so DejAzmach stored the password in its local fallback secret store."}`,
         displayTime(),
-        this.input.cipher.isAvailable() ? "info" : "critical",
+        vaultAvailable ? "info" : "notice",
         createdAt
       );
 

@@ -3,7 +3,8 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 APP_DIR="$ROOT_DIR/release/linux-unpacked"
-OUTPUT_DEB="$ROOT_DIR/release/DejAzmach-0.1.0-linux-amd64.deb"
+VERSION=$(node -p "require('$ROOT_DIR/package.json').version")
+OUTPUT_DEB="$ROOT_DIR/release/DejAzmach-$VERSION-linux-amd64.deb"
 STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dejazmach-deb.XXXXXX")
 PKG_DIR="$STAGE_DIR/pkg"
 
@@ -29,9 +30,9 @@ cp "$ROOT_DIR/build/linux/postinst.sh" "$PKG_DIR/DEBIAN/postinst"
 cp "$ROOT_DIR/build/linux/postrm.sh" "$PKG_DIR/DEBIAN/postrm"
 chmod 755 "$PKG_DIR/DEBIAN/postinst" "$PKG_DIR/DEBIAN/postrm" "$PKG_DIR/opt/DejAzmach/dejazmach-mail-client-launcher"
 
-cat > "$PKG_DIR/DEBIAN/control" <<'EOF'
+cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: dejazmach-mail-client
-Version: 0.1.0
+Version: $VERSION
 Section: net
 Priority: optional
 Architecture: amd64

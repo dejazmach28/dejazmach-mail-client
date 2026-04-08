@@ -13,6 +13,14 @@ const mockCipher = {
   decryptString: (value: Buffer) => value.toString("utf8").replace(/^enc:/, "")
 };
 
+const fallbackCipher = {
+  isAvailable: () => false,
+  encryptString: (_value: string) => {
+    throw new Error("safeStorage unavailable");
+  },
+  decryptString: (_value: Buffer) => null
+};
+
 test("mail service starts with an empty account workspace and reference folders", () => {
   const userDataPath = createTempDir();
   const service = new MailService({ userDataPath, cipher: mockCipher });
@@ -85,6 +93,44 @@ test("mail service persists added accounts and drafts", () => {
     ),
     true
   );
+
+  service.close();
+  fs.rmSync(userDataPath, { recursive: true, force: true });
+});
+
+test("mail service stores account passwords in fallback storage when OS vault is unavailable", () => {
+  const userDataPath = createTempDir();
+  const service = new MailService({ userDataPath, cipher: fallbackCipher });
+
+  const snapshot = service.createAccount(
+    {
+      name: "Fallback",
+      address: "fallback@dejazmach.app",
+      provider: "IMAP",
+      username: "fallback@dejazmach.app",
+      password: "fallback-secret",
+      incomingServer: "imap.example.com",
+      incomingPort: 993,
+      incomingSecurity: "ssl_tls",
+      outgoingServer: "smtp.example.com",
+      outgoingPort: 465,
+      outgoingSecurity: "ssl_tls",
+      outgoingAuthMethod: "auto"
+    },
+    {
+      version: "1.0.0",
+      platform: "linux",
+      environment: "production",
+      packaged: true
+    }
+  );
+
+  const account = snapshot.accounts.find((entry) => entry.address === "fallback@dejazmach.app");
+  assert.ok(account);
+  assert.equal(account.storage, "Local fallback");
+
+  const authenticated = (service as unknown as { requireAuthenticatedAccount: (accountId: string) => { password: string } }).requireAuthenticatedAccount(account.id);
+  assert.equal(authenticated.password, "fallback-secret");
 
   service.close();
   fs.rmSync(userDataPath, { recursive: true, force: true });
