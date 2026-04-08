@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import DOMPurify from "dompurify";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, MailSummary, ThreadDetail } from "../../shared/contracts.js";
 
 type MessageReaderProps = {
@@ -14,6 +15,7 @@ type MessageReaderProps = {
   onToggleFlag: (flagged: boolean) => void;
   onReply: () => void;
   onForward: () => void;
+  onBack?: () => void;
 };
 
 const getInitials = (value: string) =>
@@ -25,24 +27,21 @@ const getInitials = (value: string) =>
     .join("") || "M";
 
 const sanitizeHtml = (html: string): string =>
-  html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "")
-    .replace(/javascript:/gi, "");
+  DOMPurify.sanitize(html, {
+    FORBID_TAGS: ["style", "script", "iframe", "form", "input", "button", "link"],
+    FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
+    FORCE_BODY: true
+  });
 
 const formatAttachmentSize = (size: number) => {
   if (size >= 1024 * 1024) {
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   }
-
   return `${Math.max(1, Math.round(size / 1024))} KB`;
 };
 
 const handleAttachmentSave = async (attachment: Attachment) => {
-  if (!window.desktopApi) {
-    return;
-  }
-
+  if (!window.desktopApi) return;
   await window.desktopApi.saveAttachment({
     filename: attachment.filename,
     data: attachment.data,
@@ -62,53 +61,98 @@ export function MessageReader({
   onMove,
   onToggleFlag,
   onReply,
-  onForward
+  onForward,
+  onBack
 }: MessageReaderProps) {
   const [messageViewMode, setMessageViewMode] = useState<Record<string, "html" | "plain">>({});
   const [htmlLoadingMessageId, setHtmlLoadingMessageId] = useState<string | null>(null);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moveMenuRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
+
+  // Close menus when clicking outside
+  useEffect(() => {
+    if (!moreMenuOpen && !moveMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+      if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) {
+        setMoveMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [moreMenuOpen, moveMenuOpen]);
+
+  // Scroll to top when thread changes
+  useEffect(() => {
+    if (streamRef.current) {
+      streamRef.current.scrollTop = 0;
+    }
+  }, [thread?.id]);
 
   const handleShowHtml = (messageId: string) => {
     setHtmlLoadingMessageId(messageId);
     window.setTimeout(() => {
-      setMessageViewMode((currentMode) => ({
-        ...currentMode,
-        [messageId]: "html"
-      }));
+      setMessageViewMode((currentMode) => ({ ...currentMode, [messageId]: "html" }));
       setHtmlLoadingMessageId((currentId) => (currentId === messageId ? null : currentId));
     }, 120);
   };
 
-  if (!thread) {
-    return (
-      <article className="reader-card">
-        <div className="empty-panel empty-panel-reader">
-          <h3>No conversation selected.</h3>
-          <p>Select a message from the center column or start a new draft.</p>
-        </div>
-      </article>
-    );
-  }
-
+  // Must be before any early return to satisfy the rules of hooks.
   const readerHtmlChoices = useMemo(
     () =>
-      thread.messages.reduce<Record<string, string>>((accumulator, message) => {
+      (thread?.messages ?? []).reduce<Record<string, string>>((accumulator, message) => {
         if (message.html) {
           accumulator[message.id] = sanitizeHtml(message.html);
         }
         return accumulator;
       }, {}),
-    [thread.messages]
+    [thread?.messages]
   );
+
+  if (!thread) {
+    return (
+      <article className="reader-card">
+        {onBack ? (
+          <button
+            aria-label="Back to message list"
+            className="reader-back-button reader-back-button-empty"
+            onClick={onBack}
+            type="button"
+          >
+            ← Back
+          </button>
+        ) : null}
+        <div className="empty-panel empty-panel-reader">
+          <div className="empty-panel-icon" aria-hidden="true">✉</div>
+          <h3>No conversation selected</h3>
+          <p>Select a message from the list or compose a new one.</p>
+        </div>
+      </article>
+    );
+  }
 
   return (
     <article className="reader-card">
       <header className="reader-header">
+        {onBack ? (
+          <button
+            aria-label="Back to message list"
+            className="reader-back-button"
+            onClick={onBack}
+            type="button"
+          >
+            ← Back
+          </button>
+        ) : null}
         <div className="reader-title">
-          <span className="eyebrow">Conversation</span>
+          <span className="eyebrow">Conversation · {thread.messages.length} {thread.messages.length === 1 ? "message" : "messages"}</span>
           <h2>{thread.subject}</h2>
-          <p>{thread.participants.join(", ")}</p>
+          <p className="reader-participants">{thread.participants.join(", ")}</p>
         </div>
 
         <div className="reader-actions">
@@ -117,6 +161,7 @@ export function MessageReader({
               aria-label={readerMessage.flagged ? "Unstar message" : "Star message"}
               className="btn-icon"
               onClick={() => onToggleFlag(!readerMessage.flagged)}
+              title={readerMessage.flagged ? "Remove star" : "Star this message"}
               type="button"
             >
               <span className={readerMessage.flagged ? "flag-button flag-button-active" : "flag-button"}>
@@ -124,7 +169,7 @@ export function MessageReader({
               </span>
             </button>
           ) : null}
-          <div className="more-menu-shell">
+          <div className="more-menu-shell" ref={moreMenuRef}>
             <button
               aria-label="More actions"
               className="btn-icon"
@@ -134,14 +179,15 @@ export function MessageReader({
               ⋯
             </button>
             {moreMenuOpen ? (
-              <div className="more-menu">
-                <button onClick={onMarkUnread} type="button">
+              <div className="more-menu" role="menu">
+                <button onClick={() => { setMoreMenuOpen(false); onMarkUnread(); }} role="menuitem" type="button">
                   Mark as unread
                 </button>
-                <button onClick={onMarkSpam} type="button">
+                <button onClick={() => { setMoreMenuOpen(false); onMarkSpam(); }} role="menuitem" type="button">
                   Mark as spam
                 </button>
-                <button onClick={() => window.print()} type="button">
+                <div className="more-menu-divider" />
+                <button onClick={() => { setMoreMenuOpen(false); window.print(); }} role="menuitem" type="button">
                   Print
                 </button>
               </div>
@@ -150,21 +196,27 @@ export function MessageReader({
         </div>
       </header>
 
-      <div className="thread-stream">
-        {thread.messages.map((message) => (
+      <div className="thread-stream" ref={streamRef}>
+        {thread.messages.map((message, index) => (
           <article className="thread-message" key={message.id}>
             <div className="thread-topline">
               <div className="thread-person">
-                <span className="message-avatar">{getInitials(message.sender)}</span>
-                <div>
-                  <strong>{message.sender}</strong>
-                  <p>{message.address}</p>
+                <span className="message-avatar thread-avatar">{getInitials(message.sender)}</span>
+                <div className="thread-sender-info">
+                  <strong className="thread-sender-name">{message.sender}</strong>
+                  <span className="thread-sender-addr">{message.address}</span>
+                  {message.to ? (
+                    <span className="thread-meta-row"><span className="thread-meta-label">To:</span> {message.to}</span>
+                  ) : null}
+                  {message.cc ? (
+                    <span className="thread-meta-row"><span className="thread-meta-label">CC:</span> {message.cc}</span>
+                  ) : null}
                 </div>
               </div>
               <div className="thread-topline-meta">
-                <span>{message.sentAt}</span>
+                <span className="thread-timestamp">{message.sentAt}</span>
                 <span className={message.verified ? "mini-pill mini-pill-success" : "mini-pill mini-pill-warning"}>
-                  {message.verified ? "verified" : "review"}
+                  {message.verified ? "✓ verified" : "⚠ review"}
                 </span>
               </div>
             </div>
@@ -172,40 +224,36 @@ export function MessageReader({
             {message.contentMode === "remote-pending" ? (
               loadingMessageBodyId === message.id ? (
                 <div className="thread-loading-shell" aria-live="polite">
-                  <div className="skeleton-bar" style={{ width: "60%", height: "18px" }} />
-                  <div className="skeleton-bar" style={{ width: "100%", height: "14px" }} />
-                  <div className="skeleton-bar" style={{ width: "90%", height: "14px" }} />
-                  <div className="skeleton-bar" style={{ width: "75%", height: "14px" }} />
+                  <div className="skeleton-bar" style={{ width: "55%", height: "16px" }} />
+                  <div className="skeleton-bar" style={{ width: "100%", height: "13px" }} />
+                  <div className="skeleton-bar" style={{ width: "88%", height: "13px" }} />
+                  <div className="skeleton-bar" style={{ width: "72%", height: "13px" }} />
+                  <div className="skeleton-bar" style={{ width: "80%", height: "13px" }} />
                 </div>
               ) : (
                 <div className="thread-warning">
-                  This message was synced as headers only. Open it from the list to fetch the full RFC822 body.
+                  Headers only — select this message in the list to fetch the full body.
                 </div>
               )
             ) : null}
 
             {message.html && !messageViewMode[message.id] ? (
               <div className="html-choice-banner">
-                <span>This message contains HTML content.</span>
+                <span className="html-choice-label">HTML version available</span>
                 <div className="html-choice-actions">
                   <button
                     className="html-choice-button"
                     onClick={() => handleShowHtml(message.id)}
                     type="button"
                   >
-                    Show formatted version
+                    Show formatted
                   </button>
                   <button
                     className="html-choice-button html-choice-button-secondary"
-                    onClick={() =>
-                      setMessageViewMode((currentMode) => ({
-                        ...currentMode,
-                        [message.id]: "plain"
-                      }))
-                    }
+                    onClick={() => setMessageViewMode((currentMode) => ({ ...currentMode, [message.id]: "plain" }))}
                     type="button"
                   >
-                    Keep plain text
+                    Keep plain
                   </button>
                 </div>
               </div>
@@ -226,14 +274,14 @@ export function MessageReader({
 
             {message.attachments.length > 0 ? (
               <section className="attachment-section">
-                <span className="attachment-label">Attachments</span>
+                <span className="attachment-label">
+                  {message.attachments.length} {message.attachments.length === 1 ? "Attachment" : "Attachments"}
+                </span>
                 <div className="attachment-list">
                   {message.attachments.map((attachment) => (
                     <div className="attachment-chip" key={`${message.id}-${attachment.filename}-${attachment.size}`}>
                       <span className="attachment-chip-copy">
-                        <span className="attachment-icon" aria-hidden="true">
-                          📎
-                        </span>
+                        <span className="attachment-icon" aria-hidden="true">📎</span>
                         <span>
                           <strong>{attachment.filename}</strong>
                           <span>{formatAttachmentSize(attachment.size)}</span>
@@ -241,17 +289,27 @@ export function MessageReader({
                       </span>
                       <button
                         className="attachment-download"
-                        onClick={() => {
-                          void handleAttachmentSave(attachment);
-                        }}
+                        onClick={() => { void handleAttachmentSave(attachment); }}
                         type="button"
                       >
-                        Download
+                        ↓ Save
                       </button>
                     </div>
                   ))}
                 </div>
               </section>
+            ) : null}
+
+            {/* Show Reply/Forward inline after last message */}
+            {index === thread.messages.length - 1 ? (
+              <div className="thread-inline-reply">
+                <button className="btn-action btn-action-reply" onClick={onReply} type="button">
+                  ↩ Reply
+                </button>
+                <button className="btn-action" onClick={onForward} type="button">
+                  ↪ Forward
+                </button>
+              </div>
             ) : null}
           </article>
         ))}
@@ -259,28 +317,20 @@ export function MessageReader({
 
       <footer className="reader-footer">
         <div className="reader-footer-left">
-          <button className="btn-action" onClick={onReply} type="button">
-            Reply
+          <button className="btn-action btn-action-archive" onClick={onArchive} title="Archive" type="button">
+            Archive
           </button>
-          <button className="btn-action" onClick={onForward} type="button">
-            Forward
-          </button>
-          <button className="btn-action" onClick={onArchive} type="button">
-            📦 Archive
-          </button>
-          <div className="more-menu-shell">
+          <div className="more-menu-shell" ref={moveMenuRef}>
             <button className="btn-action" onClick={() => setMoveMenuOpen((current) => !current)} type="button">
-              Move to ▾
+              Move ▾
             </button>
             {moveMenuOpen ? (
-              <div className="more-menu">
+              <div className="more-menu more-menu-up" role="menu">
                 {folders.map((folder) => (
                   <button
                     key={folder.id}
-                    onClick={() => {
-                      setMoveMenuOpen(false);
-                      onMove(folder.name);
-                    }}
+                    onClick={() => { setMoveMenuOpen(false); onMove(folder.name); }}
+                    role="menuitem"
                     type="button"
                   >
                     {folder.name}
@@ -290,7 +340,7 @@ export function MessageReader({
             ) : null}
           </div>
         </div>
-        <button className="btn-action-danger" onClick={onDelete} type="button">
+        <button className="btn-action btn-action-danger" onClick={onDelete} title="Delete message" type="button">
           Delete
         </button>
       </footer>

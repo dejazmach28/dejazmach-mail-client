@@ -87,6 +87,7 @@ export type MailSummary = {
   preview: string;
   label: string;
   time: string;
+  sentAt: string;
   unread?: boolean;
   flagged?: boolean;
   trust: MailTrust;
@@ -103,6 +104,8 @@ export type ThreadMessage = {
   id: string;
   sender: string;
   address: string;
+  to: string;
+  cc: string;
   sentAt: string;
   body: string;
   html: string | null;
@@ -155,8 +158,11 @@ export type CreateDraftInput = {
   accountId: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   body: string;
+  htmlBody?: string;
+  attachments?: Attachment[];
   replyToMessageId?: string;
 };
 
@@ -169,6 +175,8 @@ export type FetchMessageBodyResult = {
   body: string;
   html: string | null;
   attachments: Attachment[];
+  to?: string;
+  cc?: string;
 };
 
 export type SyncFolderInput = {

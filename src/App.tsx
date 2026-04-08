@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   ActionResult,
   CreateAccountInput,
@@ -102,7 +102,6 @@ const getFirstThreadId = (workspace: WorkspaceSnapshot, accountId: string, folde
 
   return (
     workspace.messages.find((message) => message.accountId === accountId && message.folderId === folderId)?.threadId ??
-    workspace.messages.find((message) => message.accountId === accountId)?.threadId ??
     ""
   );
 };
@@ -147,6 +146,8 @@ const applyFetchedMessageBody = (
             body: fetchedMessage.body,
             html: fetchedMessage.html,
             attachments: fetchedMessage.attachments,
+            to: fetchedMessage.to ?? message.to,
+            cc: fetchedMessage.cc ?? message.cc,
             contentMode: "plain"
           }
         : message
@@ -205,6 +206,7 @@ function App() {
   const [dismissedReauthIds, setDismissedReauthIds] = useState<string[]>([]);
   const [folderSyncTimestamps, setFolderSyncTimestamps] = useState<Record<string, number>>({});
   const [autoSyncingFolderKey, setAutoSyncingFolderKey] = useState<string | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<"sidebar" | "list" | "reader">("list");
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
     accountId: "",
@@ -214,16 +216,28 @@ function App() {
     body: ""
   });
 
+  // Refs to always have the latest selection IDs when applyWorkspace is called inside async callbacks.
+  const selectedAccountIdRef = useRef(selectedAccountId);
+  const selectedFolderIdRef = useRef(selectedFolderId);
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  useEffect(() => { selectedAccountIdRef.current = selectedAccountId; }, [selectedAccountId]);
+  useEffect(() => { selectedFolderIdRef.current = selectedFolderId; }, [selectedFolderId]);
+  useEffect(() => { selectedThreadIdRef.current = selectedThreadId; }, [selectedThreadId]);
+
   const applyWorkspace = (nextWorkspace: WorkspaceSnapshot) => {
-    const nextAccountId = nextWorkspace.accounts.some((account) => account.id === selectedAccountId)
-      ? selectedAccountId
+    const currentAccountId = selectedAccountIdRef.current;
+    const currentFolderId = selectedFolderIdRef.current;
+    const currentThreadId = selectedThreadIdRef.current;
+
+    const nextAccountId = nextWorkspace.accounts.some((account) => account.id === currentAccountId)
+      ? currentAccountId
       : (nextWorkspace.accounts[0]?.id ?? "");
-    const nextFolderId = nextWorkspace.folders.some((folder) => folder.id === selectedFolderId)
-      ? selectedFolderId
+    const nextFolderId = nextWorkspace.folders.some((folder) => folder.id === currentFolderId)
+      ? currentFolderId
       : getFirstFolderId(nextWorkspace, nextAccountId);
-    const nextThreadId = nextWorkspace.threads.some((thread) => thread.id === selectedThreadId)
-      ? selectedThreadId
-      : getFirstThreadId(nextWorkspace, nextAccountId, nextFolderId);
+    const nextThreadId = nextWorkspace.threads.some((thread) => thread.id === currentThreadId)
+      ? currentThreadId
+      : "";
 
     setWorkspace(nextWorkspace);
     setSelectedAccountId(nextAccountId);
@@ -236,6 +250,11 @@ function App() {
           ? currentDraft.accountId
           : (nextWorkspace.accounts[0]?.id ?? "")
     }));
+    // Reset the onboarding form when the last account is removed so the
+    // welcome screen always starts with a blank form.
+    if (nextWorkspace.accounts.length === 0) {
+      setAccountForm(initialAccountForm);
+    }
   };
 
   useEffect(() => {
@@ -332,23 +351,27 @@ function App() {
   const visibleFolders = selectedAccount ? getAccountFolders(workspace, selectedAccount.id) : [];
   const selectedFolder = visibleFolders.find((folder) => folder.id === selectedFolderId) ?? visibleFolders[0];
   const selectedFolderKey = selectedAccount && selectedFolder ? `${selectedAccount.id}:${selectedFolder.id}` : null;
-  const accountMessages = selectedAccount
-    ? workspace.messages.filter((message) => message.accountId === selectedAccount.id)
-    : [];
+  const accountMessages = useMemo(
+    () => (selectedAccount ? workspace.messages.filter((message) => message.accountId === selectedAccount.id) : []),
+    [selectedAccount, workspace.messages]
+  );
   const search = searchQuery.trim().toLowerCase();
-  const folderMessages = selectedAccount
-    ? accountMessages.filter((message) => message.folderId === selectedFolder?.id)
-    : [];
-  const visibleMessages = !search
-    ? folderMessages
-    : folderMessages.filter((message) =>
-        [message.sender, message.subject, message.preview, message.label].some((value) =>
-          value.toLowerCase().includes(search)
-        )
-      );
-  const selectedThread =
-    workspace.threads.find((thread) => thread.id === selectedThreadId) ??
-    workspace.threads.find((thread) => thread.id === visibleMessages[0]?.threadId);
+  const folderMessages = useMemo(
+    () => (selectedAccount ? accountMessages.filter((message) => message.folderId === selectedFolder?.id) : []),
+    [selectedAccount, accountMessages, selectedFolder?.id]
+  );
+  const visibleMessages = useMemo(
+    () =>
+      !search
+        ? folderMessages
+        : folderMessages.filter((message) =>
+            [message.sender, message.subject, message.preview, message.label].some((value) =>
+              value.toLowerCase().includes(search)
+            )
+          ),
+    [folderMessages, search]
+  );
+  const selectedThread = workspace.threads.find((thread) => thread.id === selectedThreadId);
   const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
   const activeThreadMessage = selectedThread?.messages[0];
   const reauthAccount = workspace.accounts.find((account) => account.id === reauthAccountId);
@@ -359,7 +382,10 @@ function App() {
     }
 
     const lastSyncedAt = folderSyncTimestamps[selectedFolderKey] ?? 0;
-    if (Date.now() - lastSyncedAt < 2 * 60 * 1000) {
+    const neverSynced = lastSyncedAt === 0;
+
+    // Always sync on first visit to a folder; otherwise throttle to 30 seconds.
+    if (!neverSynced && Date.now() - lastSyncedAt < 30 * 1000) {
       return;
     }
 
@@ -431,8 +457,9 @@ function App() {
     const nextFolderId = getFirstFolderId(workspace, accountId);
     setSelectedAccountId(accountId);
     setSelectedFolderId(nextFolderId);
-    setSelectedThreadId(getFirstThreadId(workspace, accountId, nextFolderId));
+    setSelectedThreadId("");
     setActiveSurface("message");
+    setMobilePanel("list");
   };
 
   const requestReauth = (accountId: string) => {
@@ -447,8 +474,9 @@ function App() {
     }
 
     setSelectedFolderId(folderId);
-    setSelectedThreadId(getFirstThreadId(workspace, selectedAccount.id, folderId));
+    setSelectedThreadId("");
     setActiveSurface("message");
+    setMobilePanel("list");
   };
 
   const openComposer = (
@@ -461,16 +489,19 @@ function App() {
       ...overrides
     }));
     setActiveSurface("compose");
+    setMobilePanel("reader");
   };
 
   const discardDraft = () => {
     resetDraftFields();
     setActiveSurface("message");
+    setMobilePanel("list");
   };
 
   const openMessage = async (messageId: string, threadId: string, accountId: string) => {
     setSelectedThreadId(threadId);
     setActiveSurface("message");
+    setMobilePanel("reader");
     setActionError(null);
 
     const selectedMessage = workspace.messages.find((message) => message.id === messageId);
@@ -637,25 +668,58 @@ function App() {
 
     setIsSavingAccount(true);
 
+    // Track the created account ID so we can roll back if verification fails.
+    let createdAccountId: string | null = null;
+
     try {
-      const nextWorkspace = unwrapResult(await window.desktopApi.createAccount(accountForm));
-      const createdAccount = nextWorkspace.accounts[nextWorkspace.accounts.length - 1];
-      applyWorkspace(nextWorkspace);
-
-      if (createdAccount) {
-        const nextFolderId = getFirstFolderId(nextWorkspace, createdAccount.id);
-        setSelectedAccountId(createdAccount.id);
-        setSelectedFolderId(nextFolderId);
-        setSelectedThreadId(getFirstThreadId(nextWorkspace, createdAccount.id, nextFolderId));
-        setDraftForm((currentDraft) => ({ ...currentDraft, accountId: createdAccount.id }));
+      // Step 1: persist credentials locally.
+      const createResult = await window.desktopApi.createAccount(accountForm);
+      if (!createResult.ok || !createResult.data) {
+        throw new Error(!createResult.ok ? createResult.error : "Failed to save account.");
       }
+      const createdAccount = createResult.data.accounts[createResult.data.accounts.length - 1];
+      if (!createdAccount) {
+        throw new Error("Account record was not created.");
+      }
+      createdAccountId = createdAccount.id;
 
+      // Step 2: connect to the server, discover folders, sync inbox.
+      // If this throws we roll back the account so the user stays on the form.
+      const verifyResult = await window.desktopApi.verifyAccount(createdAccount.id);
+      if (!verifyResult.ok || !verifyResult.data) {
+        throw new Error(!verifyResult.ok ? verifyResult.error : "Could not connect to the mail server. Check your credentials and server settings.");
+      }
+      const verifiedWorkspace = verifyResult.data;
+
+      // Success — apply the fully-loaded workspace.
+      const nextFolderId = getFolderIdForAccount(verifiedWorkspace, createdAccount.id, "inbox");
+      applyWorkspace(verifiedWorkspace);
+      setSelectedAccountId(createdAccount.id);
+      setSelectedFolderId(nextFolderId);
+      setSelectedThreadId(getFirstThreadId(verifiedWorkspace, createdAccount.id, nextFolderId));
+      setDraftForm((currentDraft) => ({ ...currentDraft, accountId: createdAccount.id }));
+      // Mark the inbox as freshly synced so the auto-sync doesn't immediately re-fire.
+      const inboxFolder = verifiedWorkspace.folders.find(
+        (f) => f.accountId === createdAccount.id && f.kind === "inbox"
+      );
+      if (inboxFolder) {
+        const key = `${createdAccount.id}:${inboxFolder.id}`;
+        setFolderSyncTimestamps((current) => ({ ...current, [key]: Date.now() }));
+      }
       setAccountForm(initialAccountForm);
       setShowAccountSetup(false);
       setActiveSurface("message");
-      showActionNotice(`Stored ${accountForm.address} in the local account vault.`);
+      createdAccountId = null; // no rollback needed
+
+      const folderCount = verifiedWorkspace.folders.filter((f) => f.accountId === createdAccount.id).length;
+      showActionNotice(`${accountForm.address} connected — ${folderCount} folder${folderCount === 1 ? "" : "s"} loaded.`);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Account onboarding failed.");
+      const message = error instanceof Error ? error.message : "Account setup failed.";
+      setActionError(message);
+      // Roll back: remove the account record so the user can try again from the form.
+      if (createdAccountId && window.desktopApi) {
+        void window.desktopApi.deleteAccount(createdAccountId).catch(() => {});
+      }
     } finally {
       setIsSavingAccount(false);
     }
@@ -888,17 +952,25 @@ function App() {
             </section>
           ) : null}
 
-          <section className="workspace-frame">
+          <section className="workspace-frame" data-mobile-panel={mobilePanel}>
+            {mobilePanel === "sidebar" ? (
+              <div
+                className="sidebar-scrim"
+                aria-hidden="true"
+                onClick={() => setMobilePanel("list")}
+              />
+            ) : null}
             <Sidebar
               accounts={workspace.accounts}
               appName={workspace.shellState.appName}
               folders={visibleFolders}
               onCompose={() => openComposer()}
+              onCloseSidebar={() => setMobilePanel("list")}
               onSelectAccount={chooseAccount}
               onSelectFolder={chooseFolder}
               onRequestReauth={requestReauth}
               onShowAddAccount={() => setShowAccountSetup(true)}
-              onShowSettings={() => setActiveSurface("settings")}
+              onShowSettings={() => { setActiveSurface("settings"); setMobilePanel("reader"); }}
               selectedAccountId={selectedAccount?.id ?? ""}
               selectedFolderId={selectedFolder?.id ?? ""}
             />
@@ -907,8 +979,10 @@ function App() {
               accountId={selectedAccount?.id}
               folderName={selectedFolder?.name ?? ""}
               isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
+              isLoadingFolder={autoSyncingFolderKey === selectedFolderKey && folderMessages.length === 0}
               messages={visibleMessages}
               onOpenMessage={openMessage}
+              onShowSidebar={() => setMobilePanel("sidebar")}
               onSearchQueryChange={setSearchQuery}
               onSyncComplete={(nextWorkspace, syncedFolderName) => {
                 applyWorkspace(nextWorkspace);
@@ -957,6 +1031,7 @@ function App() {
                 <MessageReader
                   folders={visibleFolders.map((folder) => ({ id: folder.id, name: folder.name }))}
                   loadingMessageBodyId={loadingMessageBodyId}
+                  onBack={() => setMobilePanel("list")}
                   onArchive={() => {
                     if (selectedAccount?.id && readerMessage?.id) {
                       void handleArchiveMessage(selectedAccount.id, readerMessage.id);

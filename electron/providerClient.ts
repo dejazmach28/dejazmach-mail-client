@@ -25,6 +25,8 @@ export type InboxHeader = {
   subject: string;
   fromName: string;
   fromAddress: string;
+  to: string;
+  cc: string;
   date: string;
   flags: string[];
   unread: boolean;
@@ -60,8 +62,11 @@ export type SendMessageInput = {
   outgoingAuthMethod: SmtpAuthMethod;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   body: string;
+  htmlBody?: string;
+  attachments?: Array<{ filename: string; mimeType: string; data: string }>;
   inReplyTo?: string;
   references?: string[];
 };
@@ -90,6 +95,8 @@ export type FetchedMessageBody = {
   body: string;
   html: string | null;
   attachments: Attachment[];
+  to?: string;
+  cc?: string;
 };
 
 type ImapMessageMutationInput = {
@@ -342,11 +349,43 @@ const asImapList = (value: ImapNode) => (Array.isArray(value) ? value : []);
 
 const asImapString = (value: ImapNode) => (typeof value === "string" ? value : "");
 
+/** Decode an RFC 2047 encoded-word string, e.g. =?UTF-8?B?...?= or =?UTF-8?Q?...?= */
+const decodeRfc2047 = (str: string): string => {
+  if (!str || !str.includes("=?")) return str;
+  return str
+    .replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_, charset: string, encoding: string, text: string) => {
+      try {
+        if (encoding.toUpperCase() === "B") {
+          return Buffer.from(text.replace(/\s+/g, ""), "base64").toString("utf8");
+        }
+        if (encoding.toUpperCase() === "Q") {
+          const unescaped = text.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (__, hex: string) =>
+            String.fromCharCode(parseInt(hex, 16))
+          );
+          return charset.toLowerCase().replace(/[-_]/g, "").startsWith("utf8")
+            ? Buffer.from(unescaped, "latin1").toString("utf8")
+            : unescaped;
+        }
+      } catch {
+        // fall through and return original text
+      }
+      return text;
+    })
+    .replace(/\?= =\?[^?]+\?[BbQq]\?/g, "")  // join adjacent encoded words
+    .trim();
+};
+
+/** Format an address list to a comma-separated "Name <addr>" string */
+const formatAddressList = (entries: Array<{ name: string; address: string }>) =>
+  entries
+    .map((e) => (e.name.trim() ? `${e.name} <${e.address}>` : e.address))
+    .join(", ");
+
 const parseEnvelopeAddressList = (value: ImapNode) =>
   asImapList(value)
     .map((entry) => asImapList(entry))
     .map((entry) => ({
-      name: entry[0] === null ? "" : asImapString(entry[0]),
+      name: entry[0] === null ? "" : decodeRfc2047(asImapString(entry[0])),
       mailbox: asImapString(entry[2]),
       host: asImapString(entry[3])
     }))
@@ -394,7 +433,9 @@ export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
 
   const fromEntries = parseEnvelopeAddressList(envelope[2]);
   const fromEntry = fromEntries[0] ?? { name: "", address: "" };
-  const subject = asImapString(envelope[1]) || "No subject";
+  const toEntries = parseEnvelopeAddressList(envelope[5]);
+  const ccEntries = parseEnvelopeAddressList(envelope[6]);
+  const subject = decodeRfc2047(asImapString(envelope[1])) || "No subject";
   const date = asImapString(envelope[0]);
   const messageId = asImapString(envelope[9]);
 
@@ -405,6 +446,8 @@ export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
     subject,
     fromName: fromEntry.name,
     fromAddress: fromEntry.address,
+    to: formatAddressList(toEntries),
+    cc: formatAddressList(ccEntries),
     date,
     flags,
     unread: !flags.some((flag) => flag.toLowerCase() === "\\seen"),
@@ -480,13 +523,19 @@ export const parseSmtpCapabilities = (reply: Reply) =>
     .map((line) => line.replace(/^\d{3}[ -]/, "").trim())
     .filter(Boolean);
 
+const generateBoundary = () =>
+  `----=_Part_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
 export const buildPlainTextMessage = ({
   fromAddress,
   fromName,
   to,
   cc,
+  bcc,
   subject,
   body,
+  htmlBody,
+  attachments,
   inReplyTo,
   references
 }: {
@@ -494,31 +543,108 @@ export const buildPlainTextMessage = ({
   fromName: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   body: string;
+  htmlBody?: string;
+  attachments?: Array<{ filename: string; mimeType: string; data: string }>;
   inReplyTo?: string;
   references?: string[];
 }) => {
   const fromHeader = fromName.trim() ? `${fromName.trim()} <${fromAddress}>` : fromAddress;
   const normalizedReferences = Array.from(new Set((references ?? []).filter(Boolean)));
   const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2, 10)}@dejazmach.local>`;
-  const normalizedBody = encodeQuotedPrintable(normalizePlainText(body || ""));
 
-  return [
+  const baseHeaders = [
     `From: ${fromHeader}`,
     `To: ${to}`,
     ...(cc?.trim() ? [`Cc: ${cc.trim()}`] : []),
+    ...(bcc?.trim() ? [`Bcc: ${bcc.trim()}`] : []),
     `Subject: ${subject || "No subject"}`,
     `Message-ID: ${messageId}`,
     `Date: ${new Date().toUTCString()}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
     ...(normalizedReferences.length > 0 ? [`References: ${normalizedReferences.join(" ")}`] : []),
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: quoted-printable",
+  ];
+
+  const plainEncoded = encodeQuotedPrintable(normalizePlainText(body || ""));
+  const hasHtml = Boolean(htmlBody?.trim());
+  const hasAttachments = Boolean(attachments?.length);
+
+  // Simple plain text — no HTML, no attachments
+  if (!hasHtml && !hasAttachments) {
+    return [
+      ...baseHeaders,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      plainEncoded
+    ].join("\r\n");
+  }
+
+  // Build the body part (plain or alternative)
+  const buildBodyPart = (): string => {
+    if (!hasHtml) {
+      return [
+        "Content-Type: text/plain; charset=utf-8",
+        "Content-Transfer-Encoding: quoted-printable",
+        "",
+        plainEncoded
+      ].join("\r\n");
+    }
+    const altBoundary = generateBoundary();
+    const htmlEncoded = encodeQuotedPrintable(htmlBody!);
+    return [
+      `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+      "",
+      `--${altBoundary}`,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      plainEncoded,
+      "",
+      `--${altBoundary}`,
+      "Content-Type: text/html; charset=utf-8",
+      "Content-Transfer-Encoding: quoted-printable",
+      "",
+      htmlEncoded,
+      "",
+      `--${altBoundary}--`
+    ].join("\r\n");
+  };
+
+  if (!hasAttachments) {
+    return [...baseHeaders, buildBodyPart()].join("\r\n");
+  }
+
+  // multipart/mixed: body + attachments
+  const mixedBoundary = generateBoundary();
+  const lines: string[] = [
+    ...baseHeaders,
+    `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
     "",
-    normalizedBody
-  ].join("\r\n");
+    `--${mixedBoundary}`,
+    buildBodyPart(),
+    "",
+  ];
+
+  for (const att of attachments!) {
+    // Chunk base64 at 76 chars per line (RFC 2045)
+    const chunked = att.data.replace(/(.{76})/g, "$1\r\n").trimEnd();
+    lines.push(
+      `--${mixedBoundary}`,
+      `Content-Type: ${att.mimeType}; name="${att.filename}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${att.filename}"`,
+      "",
+      chunked,
+      ""
+    );
+  }
+
+  lines.push(`--${mixedBoundary}--`);
+  return lines.join("\r\n");
 };
 
 class LineSocket {
@@ -1257,7 +1383,15 @@ export const fetchImapMessageBody = async (input: FetchMessageBodyInput) => {
       throw new Error(`The IMAP server returned no body data for UID ${input.uid}.`);
     }
 
-    return extractMimeContent(messageLiteral);
+    const content = extractMimeContent(messageLiteral);
+    // Extract top-level To/CC headers from the raw message for the reader pane
+    const { headerBlock } = splitMimeMessage(messageLiteral);
+    const topHeaders = parseMimeHeaders(headerBlock);
+    return {
+      ...content,
+      to: decodeRfc2047(topHeaders.get("to") ?? ""),
+      cc: decodeRfc2047(topHeaders.get("cc") ?? "")
+    };
   } finally {
     await logoutImapSocket(socket, "B0004");
   }

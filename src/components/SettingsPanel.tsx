@@ -32,10 +32,7 @@ const environmentClassMap: Record<RuntimeEnvironment, string> = {
 };
 
 const formatPlatform = (platform: string) => {
-  if (!platform) {
-    return "Unknown";
-  }
-
+  if (!platform) return "Unknown";
   return `${platform.charAt(0).toUpperCase()}${platform.slice(1)}`;
 };
 
@@ -63,26 +60,25 @@ export function SettingsPanel({
   const [imapForm, setImapForm] = useState({
     incomingServer: selectedAccount?.incomingServer ?? "",
     incomingPort: selectedAccount?.incomingPort ?? 993,
-    incomingSecurity: selectedAccount?.incomingSecurity ?? "ssl_tls"
+    incomingSecurity: selectedAccount?.incomingSecurity ?? ("ssl_tls" as AccountSummary["incomingSecurity"])
   });
   const [smtpForm, setSmtpForm] = useState({
     outgoingServer: selectedAccount?.outgoingServer ?? "",
     outgoingPort: selectedAccount?.outgoingPort ?? 465,
-    outgoingSecurity: selectedAccount?.outgoingSecurity ?? "ssl_tls"
+    outgoingSecurity: selectedAccount?.outgoingSecurity ?? ("ssl_tls" as AccountSummary["outgoingSecurity"])
   });
   const [showPasswordForm, setShowPasswordForm] = useState(false);
-  const [passwordForm, setPasswordForm] = useState({
-    currentPassword: "",
-    newPassword: "",
-    confirmPassword: ""
-  });
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const [preferences, setPreferences] = useState<NotificationPreferences>(defaultPreferences);
+  const [savingName, setSavingName] = useState(false);
+  const [savingImap, setSavingImap] = useState(false);
+  const [savingSmtp, setSavingSmtp] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   useEffect(() => {
-    if (!selectedAccount) {
-      return;
-    }
-
+    if (!selectedAccount) return;
     setDisplayName(selectedAccount.name);
     setImapForm({
       incomingServer: selectedAccount.incomingServer,
@@ -94,84 +90,133 @@ export function SettingsPanel({
       outgoingPort: selectedAccount.outgoingPort,
       outgoingSecurity: selectedAccount.outgoingSecurity
     });
-  }, [selectedAccount]);
+  }, [selectedAccount?.id]);
 
   useEffect(() => {
-    if (!window.desktopApi) {
-      return;
-    }
-
+    if (!window.desktopApi) return;
     void window.desktopApi.getPreferences().then((result) => {
-      if (result.ok) {
-        setPreferences(result.data);
-      }
+      if (result.ok) setPreferences(result.data);
     });
   }, []);
 
-  const runWorkspaceAction = async (action: Promise<{ ok: boolean; error?: string; data?: WorkspaceSnapshot }>, notice: string) => {
-    const result = await action;
-    if (!result.ok || !result.data) {
-      throw new Error(result.error ?? "Settings update failed.");
+  const runWorkspaceAction = async (
+    action: Promise<{ ok: boolean; error?: string; data?: WorkspaceSnapshot }>,
+    notice: string,
+    setSaving: (v: boolean) => void
+  ) => {
+    setSaving(true);
+    try {
+      const result = await action;
+      if (!result.ok || !result.data) throw new Error(result.error ?? "Update failed.");
+      onWorkspaceChange(result.data);
+      onNotice(notice);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Update failed.");
+    } finally {
+      setSaving(false);
     }
-
-    onWorkspaceChange(result.data);
-    onNotice(notice);
   };
+
+  const requireApi = (): typeof window.desktopApi => {
+    if (!window.desktopApi) {
+      onError("This requires the Electron desktop shell.");
+      return undefined;
+    }
+    return window.desktopApi;
+  };
+
+  const tabs = [
+    { id: "account" as const, label: "Account" },
+    { id: "signature" as const, label: "Signature" },
+    { id: "notifications" as const, label: "Notifications" },
+    { id: "about" as const, label: "About" }
+  ];
 
   return (
     <article className="reader-card settings-panel">
       <header className="pane-header settings-header">
         <div>
-          <span className="eyebrow">Settings</span>
-          <h2>{selectedAccount?.name ?? "Account settings"}</h2>
+          <span className="eyebrow eyebrow-inverse">Settings</span>
+          <h2 className="pane-folder-name" style={{ marginTop: 6 }}>
+            {selectedAccount?.name ?? "Account settings"}
+          </h2>
         </div>
+        {selectedAccount ? (
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            <span className={accountClassMap[selectedAccount.status]}>{selectedAccount.status}</span>
+            <span className={environmentClassMap[environment]}>{environment}</span>
+          </div>
+        ) : null}
       </header>
 
       {selectedAccount ? (
         <div className="settings-scroll">
           <div className="settings-tabbar">
-            {(["account", "signature", "notifications", "about"] as const).map((tab) => (
+            {tabs.map((tab) => (
               <button
-                className={activeTab === tab ? "settings-tab settings-tab-active" : "settings-tab"}
-                key={tab}
-                onClick={() => setActiveTab(tab)}
+                className={activeTab === tab.id ? "settings-tab settings-tab-active" : "settings-tab"}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
                 type="button"
               >
-                {tab === "account" ? "Account" : tab === "signature" ? "Signature" : tab === "notifications" ? "Notifications" : "About"}
+                {tab.label}
               </button>
             ))}
           </div>
 
+          {/* ── Account Tab ─────────────────────────────────────── */}
           {activeTab === "account" ? (
             <section className="settings-grid settings-grid-single">
+              {/* Identity */}
               <div className="settings-card">
-                <span className="eyebrow">Account</span>
-                <div className="settings-badges">
-                  <span className={accountClassMap[selectedAccount.status]}>{selectedAccount.status}</span>
-                  <span className={environmentClassMap[environment]}>{environment}</span>
+                <span className="eyebrow eyebrow-inverse">Identity</span>
+                <div className="settings-form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                  <label className="field">
+                    <span>Display name</span>
+                    <input onChange={(e) => setDisplayName(e.target.value)} value={displayName} />
+                  </label>
+                  <label className="field">
+                    <span>Email address</span>
+                    <input disabled value={selectedAccount.address} />
+                  </label>
                 </div>
-                <label className="field field-full">
-                  <span>Display name</span>
-                  <input onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
-                </label>
-                <label className="field field-full">
-                  <span>Email address</span>
-                  <input disabled value={selectedAccount.address} />
-                </label>
+                <div className="settings-inline-actions">
+                  <button
+                    className="primary-button"
+                    disabled={savingName}
+                    onClick={() => {
+                      const api = requireApi();
+                      if (!api) return;
+                      void runWorkspaceAction(
+                        api.updateAccountDisplayName({ accountId: selectedAccount.id, name: displayName }),
+                        "Display name updated.",
+                        setSavingName
+                      );
+                    }}
+                    type="button"
+                  >
+                    {savingName ? "Saving…" : "Save name"}
+                  </button>
+                </div>
+              </div>
+
+              {/* IMAP */}
+              <div className="settings-card">
+                <span className="eyebrow eyebrow-inverse">Incoming IMAP</span>
                 <div className="settings-form-grid">
                   <label className="field">
-                    <span>IMAP host</span>
+                    <span>Host</span>
                     <input
-                      onChange={(event) => setImapForm((current) => ({ ...current, incomingServer: event.target.value }))}
+                      onChange={(e) => setImapForm((c) => ({ ...c, incomingServer: e.target.value }))}
                       value={imapForm.incomingServer}
                     />
                   </label>
                   <label className="field">
                     <span>Port</span>
                     <input
-                      onChange={(event) =>
-                        setImapForm((current) => ({ ...current, incomingPort: Number(event.target.value) || 0 }))
-                      }
+                      max={65535}
+                      min={1}
+                      onChange={(e) => setImapForm((c) => ({ ...c, incomingPort: Number(e.target.value) || 0 }))}
                       type="number"
                       value={imapForm.incomingPort}
                     />
@@ -179,11 +224,8 @@ export function SettingsPanel({
                   <label className="field">
                     <span>Security</span>
                     <select
-                      onChange={(event) =>
-                        setImapForm((current) => ({
-                          ...current,
-                          incomingSecurity: event.target.value as AccountSummary["incomingSecurity"]
-                        }))
+                      onChange={(e) =>
+                        setImapForm((c) => ({ ...c, incomingSecurity: e.target.value as AccountSummary["incomingSecurity"] }))
                       }
                       value={imapForm.incomingSecurity}
                     >
@@ -193,20 +235,43 @@ export function SettingsPanel({
                     </select>
                   </label>
                 </div>
+                <div className="settings-inline-actions">
+                  <button
+                    className="primary-button"
+                    disabled={savingImap}
+                    onClick={() => {
+                      const api = requireApi();
+                      if (!api) return;
+                      void runWorkspaceAction(
+                        api.updateAccountImap({ accountId: selectedAccount.id, ...imapForm }),
+                        "IMAP settings updated.",
+                        setSavingImap
+                      );
+                    }}
+                    type="button"
+                  >
+                    {savingImap ? "Saving…" : "Save IMAP"}
+                  </button>
+                </div>
+              </div>
+
+              {/* SMTP */}
+              <div className="settings-card">
+                <span className="eyebrow eyebrow-inverse">Outgoing SMTP</span>
                 <div className="settings-form-grid">
                   <label className="field">
-                    <span>SMTP host</span>
+                    <span>Host</span>
                     <input
-                      onChange={(event) => setSmtpForm((current) => ({ ...current, outgoingServer: event.target.value }))}
+                      onChange={(e) => setSmtpForm((c) => ({ ...c, outgoingServer: e.target.value }))}
                       value={smtpForm.outgoingServer}
                     />
                   </label>
                   <label className="field">
                     <span>Port</span>
                     <input
-                      onChange={(event) =>
-                        setSmtpForm((current) => ({ ...current, outgoingPort: Number(event.target.value) || 0 }))
-                      }
+                      max={65535}
+                      min={1}
+                      onChange={(e) => setSmtpForm((c) => ({ ...c, outgoingPort: Number(e.target.value) || 0 }))}
                       type="number"
                       value={smtpForm.outgoingPort}
                     />
@@ -214,11 +279,8 @@ export function SettingsPanel({
                   <label className="field">
                     <span>Security</span>
                     <select
-                      onChange={(event) =>
-                        setSmtpForm((current) => ({
-                          ...current,
-                          outgoingSecurity: event.target.value as AccountSummary["outgoingSecurity"]
-                        }))
+                      onChange={(e) =>
+                        setSmtpForm((c) => ({ ...c, outgoingSecurity: e.target.value as AccountSummary["outgoingSecurity"] }))
                       }
                       value={smtpForm.outgoingSecurity}
                     >
@@ -231,91 +293,41 @@ export function SettingsPanel({
                 <div className="settings-inline-actions">
                   <button
                     className="primary-button"
+                    disabled={savingSmtp}
                     onClick={() => {
-                      if (!window.desktopApi) {
-                        onError("Settings updates require the Electron desktop shell.");
-                        return;
-                      }
-
+                      const api = requireApi();
+                      if (!api) return;
                       void runWorkspaceAction(
-                        window.desktopApi.updateAccountDisplayName({
-                          accountId: selectedAccount.id,
-                          name: displayName
-                        }),
-                        "Display name updated."
-                      ).catch((error) => onError(error instanceof Error ? error.message : "Display name update failed."));
+                        api.updateAccountSmtp({ accountId: selectedAccount.id, ...smtpForm }),
+                        "SMTP settings updated.",
+                        setSavingSmtp
+                      );
                     }}
                     type="button"
                   >
-                    Save name
+                    {savingSmtp ? "Saving…" : "Save SMTP"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Password & Verification */}
+              <div className="settings-card">
+                <span className="eyebrow eyebrow-inverse">Authentication</span>
+                <div className="settings-inline-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={verifyingAccountId === selectedAccount.id}
+                    onClick={() => onVerifyAccount(selectedAccount.id)}
+                    type="button"
+                  >
+                    {verifyingAccountId === selectedAccount.id ? "Verifying…" : "Verify & sync"}
                   </button>
                   <button
-                    className="primary-button"
-                    onClick={() => {
-                      if (!window.desktopApi) {
-                        onError("Settings updates require the Electron desktop shell.");
-                        return;
-                      }
-
-                      void runWorkspaceAction(
-                        window.desktopApi.updateAccountImap({
-                          accountId: selectedAccount.id,
-                          incomingServer: imapForm.incomingServer,
-                          incomingPort: imapForm.incomingPort,
-                          incomingSecurity: imapForm.incomingSecurity
-                        }),
-                        "IMAP settings updated."
-                      ).catch((error) => onError(error instanceof Error ? error.message : "IMAP update failed."));
-                    }}
+                    className="secondary-button"
+                    onClick={() => setShowPasswordForm((c) => !c)}
                     type="button"
                   >
-                    Save IMAP
-                  </button>
-                  <button
-                    className="primary-button"
-                    onClick={() => {
-                      if (!window.desktopApi) {
-                        onError("Settings updates require the Electron desktop shell.");
-                        return;
-                      }
-
-                      void runWorkspaceAction(
-                        window.desktopApi.updateAccountSmtp({
-                          accountId: selectedAccount.id,
-                          outgoingServer: smtpForm.outgoingServer,
-                          outgoingPort: smtpForm.outgoingPort,
-                          outgoingSecurity: smtpForm.outgoingSecurity
-                        }),
-                        "SMTP settings updated."
-                      ).catch((error) => onError(error instanceof Error ? error.message : "SMTP update failed."));
-                    }}
-                    type="button"
-                  >
-                    Save SMTP
-                  </button>
-                  <button className="secondary-button" onClick={() => setShowPasswordForm((current) => !current)} type="button">
-                    Change password
-                  </button>
-                  <button
-                    className="btn-action-danger"
-                    onClick={() => {
-                      if (!window.desktopApi) {
-                        onError("Account deletion requires the Electron desktop shell.");
-                        return;
-                      }
-
-                      if (!window.confirm(`Delete ${selectedAccount.address}?`)) {
-                        return;
-                      }
-
-                      void runWorkspaceAction(
-                        window.desktopApi.deleteAccount(selectedAccount.id),
-                        "Account deleted."
-                      ).catch((error) => onError(error instanceof Error ? error.message : "Account delete failed."));
-                    }}
-                    type="button"
-                  >
-                    Delete account
+                    {showPasswordForm ? "Cancel" : "Change password"}
                   </button>
                 </div>
 
@@ -325,9 +337,7 @@ export function SettingsPanel({
                       <label className="field">
                         <span>Current password</span>
                         <input
-                          onChange={(event) =>
-                            setPasswordForm((current) => ({ ...current, currentPassword: event.target.value }))
-                          }
+                          onChange={(e) => setPasswordForm((c) => ({ ...c, currentPassword: e.target.value }))}
                           type="password"
                           value={passwordForm.currentPassword}
                         />
@@ -335,19 +345,15 @@ export function SettingsPanel({
                       <label className="field">
                         <span>New password</span>
                         <input
-                          onChange={(event) =>
-                            setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))
-                          }
+                          onChange={(e) => setPasswordForm((c) => ({ ...c, newPassword: e.target.value }))}
                           type="password"
                           value={passwordForm.newPassword}
                         />
                       </label>
                       <label className="field">
-                        <span>Confirm password</span>
+                        <span>Confirm new password</span>
                         <input
-                          onChange={(event) =>
-                            setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))
-                          }
+                          onChange={(e) => setPasswordForm((c) => ({ ...c, confirmPassword: e.target.value }))}
                           type="password"
                           value={passwordForm.confirmPassword}
                         />
@@ -356,166 +362,171 @@ export function SettingsPanel({
                     <div className="settings-inline-actions">
                       <button
                         className="primary-button"
+                        disabled={savingPassword}
                         onClick={() => {
-                          if (!window.desktopApi) {
-                            onError("Password updates require the Electron desktop shell.");
-                            return;
-                          }
-
+                          const api = requireApi();
+                          if (!api) return;
                           if (passwordForm.newPassword !== passwordForm.confirmPassword) {
                             onError("New passwords do not match.");
                             return;
                           }
-
                           void runWorkspaceAction(
-                            window.desktopApi.reauthAccount({
-                              accountId: selectedAccount.id,
-                              password: passwordForm.newPassword
-                            }),
-                            "Password updated."
-                          )
-                            .then(() => {
-                              setShowPasswordForm(false);
-                              setPasswordForm({
-                                currentPassword: "",
-                                newPassword: "",
-                                confirmPassword: ""
-                              });
-                            })
-                            .catch((error) => onError(error instanceof Error ? error.message : "Password update failed."));
+                            api.reauthAccount({ accountId: selectedAccount.id, password: passwordForm.newPassword }),
+                            "Password updated.",
+                            setSavingPassword
+                          ).then(() => {
+                            setShowPasswordForm(false);
+                            setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+                          }).catch(() => { /* errors handled inside runWorkspaceAction */ });
                         }}
                         type="button"
                       >
-                        Save password
+                        {savingPassword ? "Saving…" : "Save password"}
                       </button>
                     </div>
                   </div>
                 ) : null}
 
+                <div className="settings-meta-copy" style={{ marginTop: 4 }}>
+                  Last sync: {selectedAccount.lastSync} · Storage: {selectedAccount.storage} · Platform: {formatPlatform(platform)}
+                </div>
+              </div>
+
+              {/* Danger zone */}
+              <div className="settings-card" style={{ borderColor: "rgba(239,68,68,0.18)" }}>
+                <span className="eyebrow eyebrow-inverse">Danger zone</span>
+                <p>Permanently remove this account and all its cached data from DejAzmach.</p>
                 <div className="settings-inline-actions">
                   <button
-                    className="secondary-button"
-                    disabled={verifyingAccountId === selectedAccount.id}
-                    onClick={() => onVerifyAccount(selectedAccount.id)}
+                    className="btn-action btn-action-danger"
+                    disabled={deletingAccount}
+                    onClick={() => {
+                      const api = requireApi();
+                      if (!api) return;
+                      if (!window.confirm(`Delete ${selectedAccount.address}? This cannot be undone.`)) return;
+                      void runWorkspaceAction(
+                        api.deleteAccount(selectedAccount.id),
+                        "Account deleted.",
+                        setDeletingAccount
+                      );
+                    }}
                     type="button"
                   >
-                    {verifyingAccountId === selectedAccount.id ? "Verifying..." : "Verify & sync"}
+                    {deletingAccount ? "Deleting…" : "Delete account"}
                   </button>
-                  <span className="settings-meta-copy">
-                    Storage: {selectedAccount.storage} · Last sync: {selectedAccount.lastSync} · Platform: {formatPlatform(platform)}
-                  </span>
                 </div>
               </div>
             </section>
           ) : null}
 
+          {/* ── Signature Tab ────────────────────────────────────── */}
           {activeTab === "signature" ? (
             <section className="settings-grid settings-grid-single">
               <SignatureEditor accountId={selectedAccount.id} onSaved={onSignatureSaved} />
             </section>
           ) : null}
 
+          {/* ── Notifications Tab ────────────────────────────────── */}
           {activeTab === "notifications" ? (
             <section className="settings-grid settings-grid-single">
               <div className="settings-card">
-                <span className="eyebrow">Notifications</span>
-                <h3>Background sync behavior</h3>
-                <label className="toggle-row">
-                  <span>Desktop notifications for new mail</span>
-                  <input
-                    checked={preferences.desktopNotifications}
-                    onChange={(event) =>
-                      setPreferences((current) => ({ ...current, desktopNotifications: event.target.checked }))
-                    }
-                    type="checkbox"
-                  />
-                </label>
-                <label className="toggle-row">
-                  <span>Sound alert</span>
-                  <input
-                    checked={preferences.soundAlert}
-                    onChange={(event) =>
-                      setPreferences((current) => ({ ...current, soundAlert: event.target.checked }))
-                    }
-                    type="checkbox"
-                  />
-                </label>
-                <label className="toggle-row">
-                  <span>Badge count on taskbar</span>
-                  <input
-                    checked={preferences.badgeCount}
-                    onChange={(event) =>
-                      setPreferences((current) => ({ ...current, badgeCount: event.target.checked }))
-                    }
-                    type="checkbox"
-                  />
-                </label>
+                <span className="eyebrow eyebrow-inverse">Background sync</span>
                 <label className="field field-full">
-                  <span>Notification preview interval</span>
+                  <span>Check for new mail every</span>
                   <select
-                    onChange={(event) =>
-                      setPreferences((current) => ({
-                        ...current,
-                        syncIntervalMinutes: Number(event.target.value) as NotificationPreferences["syncIntervalMinutes"]
+                    onChange={(e) =>
+                      setPreferences((c) => ({
+                        ...c,
+                        syncIntervalMinutes: Number(e.target.value) as NotificationPreferences["syncIntervalMinutes"]
                       }))
                     }
                     value={preferences.syncIntervalMinutes}
                   >
-                    <option value={1}>Every 1 min</option>
-                    <option value={5}>Every 5 min</option>
-                    <option value={15}>Every 15 min</option>
-                    <option value={30}>Every 30 min</option>
-                    <option value={60}>Every 60 min</option>
+                    <option value={1}>1 minute</option>
+                    <option value={5}>5 minutes</option>
+                    <option value={15}>15 minutes</option>
+                    <option value={30}>30 minutes</option>
+                    <option value={60}>60 minutes</option>
                   </select>
                 </label>
-                <div className="settings-inline-actions">
+              </div>
+
+              <div className="settings-card">
+                <span className="eyebrow eyebrow-inverse">Alerts</span>
+                <label className="toggle-row">
+                  <span>Desktop notifications for new mail</span>
+                  <input
+                    checked={preferences.desktopNotifications}
+                    onChange={(e) => setPreferences((c) => ({ ...c, desktopNotifications: e.target.checked }))}
+                    type="checkbox"
+                  />
+                </label>
+                <label className="toggle-row">
+                  <span>Sound alert on new message</span>
+                  <input
+                    checked={preferences.soundAlert}
+                    onChange={(e) => setPreferences((c) => ({ ...c, soundAlert: e.target.checked }))}
+                    type="checkbox"
+                  />
+                </label>
+                <label className="toggle-row">
+                  <span>Show unread badge on taskbar icon</span>
+                  <input
+                    checked={preferences.badgeCount}
+                    onChange={(e) => setPreferences((c) => ({ ...c, badgeCount: e.target.checked }))}
+                    type="checkbox"
+                  />
+                </label>
+                <div className="settings-inline-actions" style={{ paddingTop: 4 }}>
                   <button
                     className="primary-button"
+                    disabled={savingPrefs}
                     onClick={() => {
-                      if (!window.desktopApi) {
-                        onError("Preference updates require the Electron desktop shell.");
-                        return;
-                      }
-
-                      void window.desktopApi
-                        .setPreferences(preferences)
+                      const api = requireApi();
+                      if (!api) return;
+                      setSavingPrefs(true);
+                      void api.setPreferences(preferences)
                         .then((result) => {
-                          if (!result.ok) {
-                            throw new Error(result.error);
-                          }
-                          onNotice("Notification preferences saved.");
+                          if (!result.ok) throw new Error(result.error);
+                          onNotice("Preferences saved.");
                         })
-                        .catch((error) =>
-                          onError(error instanceof Error ? error.message : "Preference update failed.")
-                        );
+                        .catch((error) => onError(error instanceof Error ? error.message : "Save failed."))
+                        .finally(() => setSavingPrefs(false));
                     }}
                     type="button"
                   >
-                    Save
+                    {savingPrefs ? "Saving…" : "Save preferences"}
                   </button>
                 </div>
               </div>
             </section>
           ) : null}
 
+          {/* ── About Tab ────────────────────────────────────────── */}
           {activeTab === "about" ? (
             <section className="settings-grid settings-grid-single">
               <div className="settings-card">
-                <span className="eyebrow">About</span>
+                <span className="eyebrow eyebrow-inverse">About</span>
                 <h3>DejAzmach</h3>
-                <p>Secure Desktop Mail Client</p>
+                <p>A secure, local-first desktop mail client built on Electron.</p>
                 <dl className="settings-list">
                   <div>
                     <dt>Version</dt>
                     <dd>{version}</dd>
                   </div>
                   <div>
-                    <dt>Tech stack</dt>
-                    <dd>Electron 35, React 18, TypeScript 5</dd>
-                  </div>
-                  <div>
                     <dt>Platform</dt>
                     <dd>{formatPlatform(platform)}</dd>
+                  </div>
+                  <div>
+                    <dt>Environment</dt>
+                    <dd>
+                      <span className={environmentClassMap[environment]}>{environment}</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Stack</dt>
+                    <dd>Electron · React 18 · TypeScript 5 · SQLite</dd>
                   </div>
                   <div>
                     <dt>Source</dt>
@@ -527,13 +538,41 @@ export function SettingsPanel({
                   </div>
                 </dl>
               </div>
+
+              <div className="settings-card">
+                <span className="eyebrow eyebrow-inverse">Security</span>
+                <h3>Local-first & private</h3>
+                <p>
+                  All mail is stored locally in an encrypted SQLite database. No data is sent to third-party servers.
+                  HTML email content is sanitized before rendering.
+                </p>
+                <dl className="settings-list">
+                  <div>
+                    <dt>Transport</dt>
+                    <dd>IMAP / SMTP (direct)</dd>
+                  </div>
+                  <div>
+                    <dt>Credential storage</dt>
+                    <dd>Electron safeStorage (OS keychain)</dd>
+                  </div>
+                  <div>
+                    <dt>HTML sanitizer</dt>
+                    <dd>DOMPurify</dd>
+                  </div>
+                  <div>
+                    <dt>Renderer process</dt>
+                    <dd>Context-isolated, sandboxed</dd>
+                  </div>
+                </dl>
+              </div>
             </section>
           ) : null}
         </div>
       ) : (
         <div className="empty-panel">
-          <h3>No account selected.</h3>
-          <p>Select a mailbox from the left rail.</p>
+          <div className="empty-panel-icon" aria-hidden="true">⚙</div>
+          <h3>No account selected</h3>
+          <p>Select a mailbox from the sidebar to manage its settings.</p>
         </div>
       )}
     </article>

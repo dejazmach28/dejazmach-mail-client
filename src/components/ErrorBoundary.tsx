@@ -22,12 +22,19 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 40, fontFamily: "system-ui, sans-serif" }}>
-          <h2>Something went wrong</h2>
-          <p style={{ color: "#dc2626" }}>{this.state.error}</p>
-          <button onClick={() => this.setState({ hasError: false, error: "" })} type="button">
-            Try again
-          </button>
+        <div className="error-boundary-shell">
+          <div className="error-boundary-card">
+            <span className="error-boundary-icon" aria-hidden="true">⚠</span>
+            <h2 className="error-boundary-title">Something went wrong</h2>
+            <p className="error-boundary-detail">{this.state.error}</p>
+            <button
+              className="btn-action btn-action-primary"
+              onClick={() => this.setState({ hasError: false, error: "" })}
+              type="button"
+            >
+              Try again
+            </button>
+          </div>
         </div>
       );
     }

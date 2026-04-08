@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { AccountSummary, CreateDraftInput } from "../../shared/contracts.js";
+import type { AccountSummary, Attachment, CreateDraftInput } from "../../shared/contracts.js";
+import { RichTextEditor } from "./RichTextEditor.js";
 
 type ComposePanelProps = {
   accounts: AccountSummary[];
@@ -13,6 +14,11 @@ type ComposePanelProps = {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
+const formatSize = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
 export function ComposePanel({
   accounts,
   draftForm,
@@ -24,6 +30,8 @@ export function ComposePanel({
   onSubmit
 }: ComposePanelProps) {
   const [showCc, setShowCc] = useState(Boolean(draftForm.cc));
+  const [showBcc, setShowBcc] = useState(Boolean(draftForm.bcc));
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!window.desktopApi || !draftForm.accountId || draftForm.body.trim()) {
@@ -38,6 +46,34 @@ export function ComposePanel({
       onFieldChange("body", `\n\n-- \n${result.data.body}`);
     });
   }, [draftForm.accountId, draftForm.body, onFieldChange]);
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const current: Attachment[] = draftForm.attachments ?? [];
+    const readers: Promise<Attachment>[] = Array.from(files).map(
+      (file) =>
+        new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target?.result as string;
+            // dataUrl = "data:mime/type;base64,XXXXX"
+            const base64 = dataUrl.split(",")[1] ?? "";
+            resolve({ filename: file.name, mimeType: file.type || "application/octet-stream", size: file.size, data: base64 });
+          };
+          reader.readAsDataURL(file);
+        })
+    );
+    void Promise.all(readers).then((newAttachments) => {
+      onFieldChange("attachments", [...current, ...newAttachments]);
+    });
+    // Reset input so same file can be re-added
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (index: number) => {
+    const next = (draftForm.attachments ?? []).filter((_, i) => i !== index);
+    onFieldChange("attachments", next);
+  };
 
   return (
     <article className="reader-card">
@@ -78,15 +114,13 @@ export function ComposePanel({
           </label>
 
           <div className="field field-full">
-            {!showCc ? (
-              <button
-                className="inline-link"
-                onClick={() => setShowCc(true)}
-                type="button"
-              >
-                + CC
-              </button>
-            ) : (
+            {!showCc && !showBcc ? (
+              <div className="compose-optional-links">
+                <button className="inline-link" onClick={() => setShowCc(true)} type="button">+ CC</button>
+                <button className="inline-link" onClick={() => setShowBcc(true)} type="button">+ BCC</button>
+              </div>
+            ) : null}
+            {showCc ? (
               <label className="field field-full">
                 <span>CC</span>
                 <input
@@ -95,7 +129,23 @@ export function ComposePanel({
                   value={draftForm.cc ?? ""}
                 />
               </label>
-            )}
+            ) : null}
+            {!showCc && showBcc ? (
+              <button className="inline-link" onClick={() => setShowCc(true)} type="button">+ CC</button>
+            ) : null}
+            {showBcc ? (
+              <label className="field field-full">
+                <span>BCC</span>
+                <input
+                  onChange={(event) => onFieldChange("bcc", event.target.value)}
+                  placeholder="hidden@example.com"
+                  value={draftForm.bcc ?? ""}
+                />
+              </label>
+            ) : null}
+            {showCc && !showBcc ? (
+              <button className="inline-link" onClick={() => setShowBcc(true)} type="button">+ BCC</button>
+            ) : null}
           </div>
 
           <label className="field field-full">
@@ -103,10 +153,55 @@ export function ComposePanel({
             <input onChange={(event) => onFieldChange("subject", event.target.value)} value={draftForm.subject} />
           </label>
 
-          <label className="field field-full">
+          <div className="field field-full compose-body-field">
             <span>Body</span>
-            <textarea onChange={(event) => onFieldChange("body", event.target.value)} rows={16} value={draftForm.body} />
-          </label>
+            <RichTextEditor
+              value={draftForm.htmlBody ?? draftForm.body}
+              onChange={(html, plain) => {
+                onFieldChange("htmlBody", html);
+                onFieldChange("body", plain);
+              }}
+            />
+          </div>
+
+          {/* Attachments */}
+          <div className="field field-full">
+            <div className="compose-attach-row">
+              <button
+                className="inline-link"
+                onClick={() => fileInputRef.current?.click()}
+                type="button"
+              >
+                + Attach files
+              </button>
+              <input
+                accept="*/*"
+                className="compose-file-input"
+                multiple
+                onChange={(e) => handleFiles(e.target.files)}
+                ref={fileInputRef}
+                type="file"
+              />
+            </div>
+            {(draftForm.attachments ?? []).length > 0 ? (
+              <div className="compose-attachment-list">
+                {(draftForm.attachments ?? []).map((att, index) => (
+                  <div className="compose-attachment-chip" key={`${att.filename}-${index}`}>
+                    <span className="compose-attachment-name">📎 {att.filename}</span>
+                    <span className="compose-attachment-size">{formatSize(att.size)}</span>
+                    <button
+                      aria-label={`Remove ${att.filename}`}
+                      className="compose-attachment-remove"
+                      onClick={() => removeAttachment(index)}
+                      type="button"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="compose-actions">

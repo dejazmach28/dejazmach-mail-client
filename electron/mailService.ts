@@ -71,6 +71,8 @@ type MessageRow = {
   attachments_json?: string | null;
   verified: number;
   flagged?: number;
+  to_text?: string | null;
+  cc_text?: string | null;
   content_mode: MessageContentMode;
   remote_message_ref?: string | null;
   remote_uid?: number | null;
@@ -378,6 +380,14 @@ export class MailService {
 
     if (!columns.has("flagged")) {
       this.database.exec("ALTER TABLE messages ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0;");
+    }
+
+    if (!columns.has("to_text")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN to_text TEXT NOT NULL DEFAULT '';");
+    }
+
+    if (!columns.has("cc_text")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN cc_text TEXT NOT NULL DEFAULT '';");
     }
 
     if (!columns.has("remote_message_ref")) {
@@ -703,11 +713,12 @@ export class MailService {
           preview,
           label,
           time,
+          sent_at AS sentAt,
           unread,
           flagged,
           trust
         FROM messages
-        ORDER BY created_at DESC
+        ORDER BY COALESCE(remote_uid, 0) DESC, created_at DESC
       `)
         .all()
         .map((row) => ({
@@ -748,6 +759,8 @@ export class MailService {
             id: message.id,
             sender: message.sender,
             address: message.address,
+            to: message.to_text ?? "",
+            cc: message.cc_text ?? "",
             sentAt: message.sent_at,
             body: message.body,
             html: message.html_body ?? null,
@@ -1153,6 +1166,15 @@ export class MailService {
     folderName: string,
     headers: InboxHeader[]
   ) {
+    // Determine the highest UID already stored for this folder before this sync.
+    // If none exist (first sync), suppress all notifications — the user hasn't
+    // "seen" these messages yet but they're not new arrivals to alert about.
+    const prevMaxRow = this.database
+      .prepare("SELECT MAX(remote_uid) AS maxUid FROM messages WHERE account_id = ? AND folder_id = ?")
+      .get(accountId, folderId) as { maxUid: number | null };
+    const previousMaxUid = prevMaxRow.maxUid ?? 0;
+    const isFirstSync = previousMaxUid === 0;
+
     const newMessages: SyncedMessageNotice[] = [];
     const seenRemoteRefs = new Set<string>();
     const findExisting = this.database.prepare(
@@ -1172,9 +1194,9 @@ export class MailService {
     const insertMessage = this.database.prepare(`
       INSERT INTO messages (
         id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-        unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, remote_message_ref, remote_uid, remote_sequence,
-        remote_folder_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode,
+        to_text, cc_text, remote_message_ref, remote_uid, remote_sequence, remote_folder_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateMessage = this.database.prepare(`
       UPDATE messages
@@ -1190,6 +1212,8 @@ export class MailService {
         trust = ?,
         sent_at = ?,
         verified = ?,
+        to_text = ?,
+        cc_text = ?,
         remote_uid = ?,
         remote_sequence = ?,
         remote_folder_name = ?
@@ -1226,6 +1250,8 @@ export class MailService {
           "review",
           sentAt,
           1,
+          header.to ?? "",
+          header.cc ?? "",
           header.uid,
           header.sequence,
           folderName,
@@ -1257,17 +1283,23 @@ export class MailService {
         "[]",
         1,
         "remote-pending",
+        header.to ?? "",
+        header.cc ?? "",
         header.remoteMessageRef,
         header.uid,
         header.sequence,
         folderName,
         createdAt
       );
-      newMessages.push({
-        messageId,
-        sender,
-        subject: header.subject
-      });
+      // Only notify if this is not the first sync AND the message's UID is
+      // strictly higher than what existed before (i.e. it arrived after our last check).
+      if (!isFirstSync && header.uid > previousMaxUid) {
+        newMessages.push({
+          messageId,
+          sender,
+          subject: header.subject
+        });
+      }
     }
 
     if (seenRemoteRefs.size > 0) {
@@ -1744,8 +1776,11 @@ export class MailService {
         outgoingAuthMethod: account.outgoingAuthMethod,
         to: input.to.trim(),
         cc: input.cc?.trim(),
+        bcc: input.bcc?.trim(),
         subject,
         body,
+        htmlBody: input.htmlBody,
+        attachments: input.attachments?.map((a) => ({ filename: a.filename, mimeType: a.mimeType, data: a.data })),
         inReplyTo: replyMetadata.inReplyTo,
         references: replyMetadata.references
       });
@@ -1825,7 +1860,8 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      // Message was pruned by a concurrent sync — return empty body rather than surfacing an error.
+      return { body: "", html: null, attachments: [] };
     }
 
     if (remoteMessage.accountId !== input.accountId) {
@@ -1869,8 +1905,16 @@ export class MailService {
       const contentMode: MessageContentMode = "plain";
 
       this.database
-        .prepare("UPDATE messages SET body = ?, html_body = ?, attachments_json = ?, content_mode = ? WHERE id = ?")
-        .run(fetchedContent.body, fetchedContent.html, JSON.stringify(fetchedContent.attachments), contentMode, input.messageId);
+        .prepare("UPDATE messages SET body = ?, html_body = ?, attachments_json = ?, content_mode = ?, to_text = ?, cc_text = ? WHERE id = ?")
+        .run(
+          fetchedContent.body,
+          fetchedContent.html,
+          JSON.stringify(fetchedContent.attachments),
+          contentMode,
+          fetchedContent.to ?? "",
+          fetchedContent.cc ?? "",
+          input.messageId
+        );
 
       this.addLedgerEntry(
         "Message body fetched from IMAP",
@@ -1878,7 +1922,13 @@ export class MailService {
         "info"
       );
 
-      return fetchedContent;
+      return {
+        body: fetchedContent.body,
+        html: fetchedContent.html,
+        attachments: fetchedContent.attachments,
+        to: fetchedContent.to,
+        cc: fetchedContent.cc
+      };
     } catch (error) {
       const message = describeTransportError(
         error,
@@ -1895,7 +1945,8 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      // Already gone (pruned by a concurrent sync) — return a fresh snapshot.
+      return this.getWorkspaceSnapshot(context);
     }
 
     if (remoteMessage.accountId !== input.accountId) {
@@ -1933,7 +1984,7 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      return this.getWorkspaceSnapshot(context);
     }
 
     if (remoteMessage.accountId !== input.accountId) {
@@ -1995,7 +2046,7 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      return this.getWorkspaceSnapshot(context);
     }
 
     if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
@@ -2027,7 +2078,7 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      return this.getWorkspaceSnapshot(context);
     }
 
     if (remoteMessage.remoteUid && remoteMessage.remoteFolderName) {
@@ -2087,7 +2138,7 @@ export class MailService {
     const remoteMessage = this.getRemoteMessageRecord(input.accountId, input.messageId);
 
     if (!remoteMessage) {
-      throw new Error("Unknown message.");
+      return this.getWorkspaceSnapshot(context);
     }
 
     const targetFolder =

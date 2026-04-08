@@ -13,6 +13,7 @@ type SidebarProps = {
   onShowSettings: () => void;
   onShowAddAccount: () => void;
   onRequestReauth: (accountId: string) => void;
+  onCloseSidebar?: () => void;
 };
 
 const getInitials = (value: string) =>
@@ -150,7 +151,8 @@ export function Sidebar({
   onSelectFolder,
   onShowSettings,
   onShowAddAccount,
-  onRequestReauth
+  onRequestReauth,
+  onCloseSidebar
 }: SidebarProps) {
   const systemFolders = systemFolderOrder
     .map((key) => folders.find((folder) => getSystemFolderKey(folder) === key))
@@ -183,7 +185,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <button className="compose-button" onClick={onCompose} type="button">
+      <button className="compose-button" onClick={() => { onCompose(); onCloseSidebar?.(); }} type="button">
         New message
       </button>
 
@@ -252,7 +254,7 @@ export function Sidebar({
                 <button
                   className={folder.id === selectedFolderId ? "folder-tile folder-tile-active" : "folder-tile"}
                   key={folder.id}
-                  onClick={() => onSelectFolder(folder.id)}
+                  onClick={() => { onSelectFolder(folder.id); onCloseSidebar?.(); }}
                   type="button"
                 >
                   <span>
@@ -290,7 +292,7 @@ export function Sidebar({
                         : "folder-tile"
                     }
                     key={item.key}
-                    onClick={() => onSelectFolder(item.folder.id)}
+                    onClick={() => { onSelectFolder(item.folder.id); onCloseSidebar?.(); }}
                     style={{ paddingLeft: `${12 + item.depth * 18}px` }}
                     type="button"
                   >

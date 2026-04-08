@@ -25,12 +25,17 @@ export function OnboardingForm({
   return (
     <article className={compact ? "modal-card onboarding-card" : "onboarding-card"}>
       <header className="onboarding-header">
-        <span className="eyebrow">{subtitle}</span>
-        <h2>{title}</h2>
-        <p>Enter the mailbox details exactly as provided by your mail host. Folders are discovered from IMAP after verification.</p>
+        <div className="onboarding-header-text">
+          <span className="eyebrow">{subtitle}</span>
+          <h2>{title}</h2>
+          <p>Enter the mailbox details exactly as provided by your mail host. Folders are discovered from IMAP after verification.</p>
+        </div>
+        {compact && onCancel ? (
+          <button aria-label="Close" className="modal-close-button" onClick={onCancel} type="button">✕</button>
+        ) : null}
       </header>
 
-      <form className="account-form" onSubmit={onSubmit}>
+      <form className="account-form" onSubmit={onSubmit} aria-busy={isSavingAccount}>
         <section className="form-section">
           <div className="section-heading-row">
             <strong>Identity</strong>
@@ -85,6 +90,7 @@ export function OnboardingForm({
             <label className="field">
               <span>Port</span>
               <input
+                max={65535}
                 min={1}
                 onChange={(event) => onFieldChange("incomingPort", Number(event.target.value) || 0)}
                 required
@@ -122,6 +128,7 @@ export function OnboardingForm({
             <label className="field">
               <span>Port</span>
               <input
+                max={65535}
                 min={1}
                 onChange={(event) => onFieldChange("outgoingPort", Number(event.target.value) || 0)}
                 required
@@ -159,7 +166,7 @@ export function OnboardingForm({
 
         <div className="button-row">
           <button className="primary-button" disabled={isSavingAccount} type="submit">
-            {isSavingAccount ? "Saving account..." : "Add account"}
+            {isSavingAccount ? "Connecting to server…" : "Add account"}
           </button>
           {compact && onCancel ? (
             <button className="secondary-button" onClick={onCancel} type="button">

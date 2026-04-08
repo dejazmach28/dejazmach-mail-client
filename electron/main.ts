@@ -1,6 +1,4 @@
 import { app } from "electron";
-app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-setuid-sandbox");
 app.setName("DejAzmach");
 import { BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell, type MenuItemConstructorOptions } from "electron";
 import fs from "node:fs/promises";
@@ -498,13 +496,8 @@ app.whenReady().then(async () => {
       });
     });
 
-    ipcMain.handle("app:get-workspace-snapshot", async () => {
-      try {
-        return requireMailService().getWorkspaceSnapshot(createWorkspaceContext());
-      } catch (error) {
-        console.error("[ipc] app:get-workspace-snapshot error:", error);
-        return requireMailService().getWorkspaceSnapshot(createWorkspaceContext());
-      }
+    ipcMain.handle("app:get-workspace-snapshot", () => {
+      return requireMailService().getWorkspaceSnapshot(createWorkspaceContext());
     });
 
   ipcMain.handle("app:create-account", async (_event, input) => {
