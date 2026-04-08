@@ -23,6 +23,27 @@ const formatSize = (bytes: number) =>
     ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
     : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
+const stripHtmlToPlainText = (html: string) =>
+  html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<li>/gi, "• ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+const looksLikeHtml = (value: string) => /<[^>]+>/.test(value);
+
 export function ComposePanel({
   accounts,
   draftForm,
@@ -38,7 +59,7 @@ export function ComposePanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!window.desktopApi || !draftForm.accountId || draftForm.body.trim()) {
+    if (!window.desktopApi || !draftForm.accountId || draftForm.body.trim() || draftForm.htmlBody?.trim()) {
       return;
     }
 
@@ -47,9 +68,17 @@ export function ComposePanel({
         return;
       }
 
-      onFieldChange("body", `\n\n-- \n${result.data.body}`);
+      const signature = result.data.body.trim();
+      if (looksLikeHtml(signature)) {
+        const htmlSignature = `<p></p><p></p><p>-- </p>${signature}`;
+        onFieldChange("htmlBody", htmlSignature);
+        onFieldChange("body", `\n\n-- \n${stripHtmlToPlainText(signature)}`);
+        return;
+      }
+
+      onFieldChange("body", `\n\n-- \n${signature}`);
     });
-  }, [draftForm.accountId, draftForm.body, onFieldChange]);
+  }, [draftForm.accountId, draftForm.body, draftForm.htmlBody, onFieldChange]);
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;

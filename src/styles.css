@@ -112,12 +112,43 @@ textarea { resize: vertical; }
 
 .workspace-frame {
   display: grid;
-  grid-template-columns: 240px 340px minmax(0, 1fr);
+  grid-template-columns:
+    var(--sidebar-width, 240px)
+    10px
+    var(--list-width, 340px)
+    10px
+    minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
 
 .sidebar-pane, .message-pane, .reader-pane { min-height: 0; }
+
+.pane-resizer {
+  position: relative;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  background: transparent;
+}
+
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border-soft);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.pane-resizer:hover::after,
+.pane-resizer-active::after {
+  background: rgba(59, 130, 246, 0.45);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08);
+}
 
 /* ================================================================
    SIDEBAR
@@ -1487,6 +1518,37 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .signature-count, .settings-meta-copy { color: var(--text-faint); font-size: 0.78rem; }
 
+.signature-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.signature-preview-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.signature-preview-shell > span {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.signature-preview {
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r);
+  background: var(--bg-subtle);
+  overflow: auto;
+}
+
+.signature-preview img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ================================================================
    COMPOSE PANEL
    ================================================================ */
@@ -1822,7 +1884,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
    ================================================================ */
 @media (max-width: 1280px) {
   .workspace-frame {
-    grid-template-columns: 220px 300px minmax(0, 1fr);
+    grid-template-columns:
+      minmax(210px, var(--sidebar-width, 220px))
+      10px
+      minmax(280px, var(--list-width, 300px))
+      10px
+      minmax(0, 1fr);
   }
 
   .settings-grid, .activity-grid {
@@ -1834,6 +1901,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .workspace-frame {
     grid-template-columns: 220px minmax(0, 1fr);
   }
+
+  .pane-resizer { display: none; }
 
   .reader-pane { display: none; }
 
@@ -1855,6 +1924,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     grid-template-columns: 200px minmax(0, 1fr);
     position: relative;
   }
+
+  .pane-resizer { display: none; }
 
   /* Reader overlays the message list from the right */
   section.reader-pane {
@@ -1910,6 +1981,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     height: 100vh;
     overflow: hidden;
   }
+
+  .pane-resizer { display: none; }
 
   /* ── Sidebar drawer ── */
   .sidebar-pane {
@@ -2034,19 +2107,40 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Compact desktop (1024 – 1280px): slightly tighter columns ── */
 @media (min-width: 1024px) and (max-width: 1279px) {
-  .workspace-frame { grid-template-columns: 210px 300px minmax(0, 1fr); }
+  .workspace-frame {
+    grid-template-columns:
+      minmax(210px, var(--sidebar-width, 210px))
+      10px
+      minmax(280px, var(--list-width, 300px))
+      10px
+      minmax(0, 1fr);
+  }
   .sidebar-pane    { padding: 18px 12px 14px; }
   .message-pane    { min-width: 0; }
 }
 
 /* ── Large desktop (≥ 1280px): comfortable widths ── */
 @media (min-width: 1280px) {
-  .workspace-frame { grid-template-columns: 240px 360px minmax(0, 1fr); }
+  .workspace-frame {
+    grid-template-columns:
+      minmax(220px, var(--sidebar-width, 240px))
+      10px
+      minmax(320px, var(--list-width, 360px))
+      10px
+      minmax(0, 1fr);
+  }
 }
 
 /* ── Extra-large (≥ 1600px): wider columns ── */
 @media (min-width: 1600px) {
-  .workspace-frame { grid-template-columns: 260px 420px minmax(0, 1fr); }
+  .workspace-frame {
+    grid-template-columns:
+      minmax(240px, var(--sidebar-width, 260px))
+      10px
+      minmax(340px, var(--list-width, 420px))
+      10px
+      minmax(0, 1fr);
+  }
 }
 
 /* ================================================================

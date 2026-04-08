@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import type {
   ActionResult,
   CreateAccountInput,
@@ -138,6 +138,20 @@ const splitAddresses = (value?: string) =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+const readStoredPaneWidth = (storageKey: string, fallback: number) => {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  const rawValue = window.localStorage.getItem(storageKey);
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsedValue) ? parsedValue : fallback;
+};
+
 const applyFetchedMessageBody = (
   workspace: WorkspaceSnapshot,
   messageId: string,
@@ -214,6 +228,9 @@ function App() {
   const [folderSyncTimestamps, setFolderSyncTimestamps] = useState<Record<string, number>>({});
   const [autoSyncingFolderKey, setAutoSyncingFolderKey] = useState<string | null>(null);
   const [mobilePanel, setMobilePanel] = useState<"sidebar" | "list" | "reader">("list");
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredPaneWidth("dejazmach.sidebar-width", 240));
+  const [listWidth, setListWidth] = useState(() => readStoredPaneWidth("dejazmach.list-width", 340));
+  const [draggingPane, setDraggingPane] = useState<"sidebar" | "list" | null>(null);
   const [accountForm, setAccountForm] = useState<CreateAccountInput>(initialAccountForm);
   const [draftForm, setDraftForm] = useState<CreateDraftInput>({
     accountId: "",
@@ -293,6 +310,57 @@ function App() {
       applyWorkspace(snapshot);
     });
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("dejazmach.sidebar-width", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("dejazmach.list-width", String(listWidth));
+  }, [listWidth]);
+
+  useEffect(() => {
+    if (!draggingPane) {
+      return;
+    }
+
+    const handlePointerMove = (event: MouseEvent) => {
+      if (window.innerWidth < 1024) {
+        return;
+      }
+
+      const edgePadding = 360;
+
+      if (draggingPane === "sidebar") {
+        const nextSidebarWidth = Math.min(
+          420,
+          Math.max(190, event.clientX)
+        );
+        const maxSidebarWidth = Math.max(190, window.innerWidth - listWidth - edgePadding);
+        setSidebarWidth(Math.min(nextSidebarWidth, maxSidebarWidth));
+        return;
+      }
+
+      const nextListWidth = Math.min(
+        620,
+        Math.max(280, event.clientX - sidebarWidth - 10)
+      );
+      const maxListWidth = Math.max(280, window.innerWidth - sidebarWidth - edgePadding);
+      setListWidth(Math.min(nextListWidth, maxListWidth));
+    };
+
+    const stopDragging = () => {
+      setDraggingPane(null);
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", stopDragging);
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", stopDragging);
+    };
+  }, [draggingPane, listWidth, sidebarWidth]);
 
   useEffect(() => {
     const pendingAccount = workspace.accounts.find(
@@ -963,7 +1031,16 @@ function App() {
             </section>
           ) : null}
 
-          <section className="workspace-frame" data-mobile-panel={mobilePanel}>
+          <section
+            className="workspace-frame"
+            data-mobile-panel={mobilePanel}
+            style={
+              {
+                "--sidebar-width": `${sidebarWidth}px`,
+                "--list-width": `${listWidth}px`
+              } as CSSProperties
+            }
+          >
             {mobilePanel === "sidebar" ? (
               <div
                 className="sidebar-scrim"
@@ -984,6 +1061,12 @@ function App() {
               onShowSettings={() => { setActiveSurface("settings"); setMobilePanel("reader"); }}
               selectedAccountId={selectedAccount?.id ?? ""}
               selectedFolderId={selectedFolder?.id ?? ""}
+            />
+            <div
+              aria-hidden="true"
+              className={draggingPane === "sidebar" ? "pane-resizer pane-resizer-active" : "pane-resizer"}
+              onMouseDown={() => setDraggingPane("sidebar")}
+              role="presentation"
             />
 
             <MessageList
@@ -1009,6 +1092,12 @@ function App() {
               selectedFolderName={selectedFolder?.name}
               selectedThreadId={selectedThread?.id ?? ""}
               unreadCount={selectedAccount?.unreadCount}
+            />
+            <div
+              aria-hidden="true"
+              className={draggingPane === "list" ? "pane-resizer pane-resizer-active" : "pane-resizer"}
+              onMouseDown={() => setDraggingPane("list")}
+              role="presentation"
             />
 
             <section className="reader-pane">
