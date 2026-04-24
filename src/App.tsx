@@ -150,6 +150,23 @@ const splitAddresses = (value?: string) =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+const mergeUniqueAddresses = (...groups: Array<string[]>) => {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const group of groups) {
+    for (const entry of group) {
+      const key = entry.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(entry);
+      }
+    }
+  }
+
+  return merged;
+};
+
 const readStoredPaneWidth = (storageKey: string, fallback: number) => {
   if (typeof window === "undefined") {
     return fallback;
@@ -447,12 +464,12 @@ function App() {
     () =>
       !search
         ? folderMessages
-        : folderMessages.filter((message) =>
+        : accountMessages.filter((message) =>
             [message.sender, message.subject, message.preview, message.label].some((value) =>
               value.toLowerCase().includes(search)
             )
           ),
-    [folderMessages, search]
+    [accountMessages, folderMessages, search]
   );
   const selectedThread = workspace.threads.find((thread) => thread.id === selectedThreadId);
   const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
@@ -467,8 +484,8 @@ function App() {
     const lastSyncedAt = folderSyncTimestamps[selectedFolderKey] ?? 0;
     const neverSynced = lastSyncedAt === 0;
 
-    // Always sync on first visit to a folder; otherwise throttle to 30 seconds.
-    if (!neverSynced && Date.now() - lastSyncedAt < 30 * 1000) {
+    // Always sync on first visit to a folder; otherwise throttle to 2 minutes.
+    if (!neverSynced && Date.now() - lastSyncedAt < 2 * 60 * 1000) {
       return;
     }
 
@@ -591,25 +608,25 @@ function App() {
     }
 
     try {
-      if (selectedMessage?.unread) {
-        const readResult = await window.desktopApi.markRead({ accountId, messageId });
-        if (readResult.data) {
-          applyWorkspace(readResult.data);
+      if (needsRemoteFetch) {
+        setLoadingMessageBodyId(messageId);
+        const result = await window.desktopApi.fetchMessageBody({ accountId, messageId });
+        if (result.data) {
+          const fetchedMessage = result.data;
+          setWorkspace((currentWorkspace) => applyFetchedMessageBody(currentWorkspace, messageId, fetchedMessage));
         }
-        unwrapResult(readResult);
+        unwrapResult(result);
       }
 
-      if (!needsRemoteFetch) {
+      if (!selectedMessage?.unread) {
         return;
       }
 
-      setLoadingMessageBodyId(messageId);
-      const result = await window.desktopApi.fetchMessageBody({ accountId, messageId });
-      if (result.data) {
-        const fetchedMessage = result.data;
-        setWorkspace((currentWorkspace) => applyFetchedMessageBody(currentWorkspace, messageId, fetchedMessage));
+      const readResult = await window.desktopApi.markRead({ accountId, messageId });
+      if (readResult.data) {
+        applyWorkspace(readResult.data);
       }
-      unwrapResult(result);
+      unwrapResult(readResult);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message body fetch failed.");
     } finally {
@@ -854,7 +871,7 @@ function App() {
       setSelectedThreadId(getFirstThreadId(nextWorkspace, draftForm.accountId, nextFolderId));
       resetDraftFields();
       setActiveSurface("message");
-      showActionNotice("Draft stored locally.");
+      showActionNotice("Draft saved.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Draft persistence failed.");
     } finally {
@@ -1104,7 +1121,7 @@ function App() {
 
             <MessageList
               accountId={selectedAccount?.id}
-              folderName={selectedFolder?.name ?? ""}
+              folderName={search ? "Search results" : selectedFolder?.name ?? ""}
               isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
               isLoadingFolder={autoSyncingFolderKey === selectedFolderKey && folderMessages.length === 0}
               messages={visibleMessages}
@@ -1150,7 +1167,7 @@ function App() {
               }}
               onSyncError={(message) => setActionError(message)}
               searchQuery={searchQuery}
-              selectedFolderName={selectedFolder?.name}
+              selectedFolderName={search ? "Search results" : selectedFolder?.name}
               selectedThreadId={selectedThread?.id ?? ""}
               unreadCount={selectedAccount?.unreadCount}
             />
@@ -1237,6 +1254,28 @@ function App() {
                       replyToMessageId: undefined
                     })
                   }
+                  onReplyAll={() => {
+                    const senderAddress = activeThreadMessage?.address ?? "";
+                    const accountAddress = selectedAccount?.address?.toLowerCase() ?? "";
+                    const replyAllCc = mergeUniqueAddresses(
+                      splitAddresses(activeThreadMessage?.to).filter((entry) => entry.toLowerCase() !== accountAddress && entry.toLowerCase() !== senderAddress.toLowerCase()),
+                      splitAddresses(activeThreadMessage?.cc).filter((entry) => entry.toLowerCase() !== accountAddress && entry.toLowerCase() !== senderAddress.toLowerCase())
+                    );
+
+                    openComposer(selectedAccount?.id, {
+                      to: senderAddress,
+                      cc: replyAllCc.join(", "),
+                      subject: withSubjectPrefix(selectedThread?.subject ?? "", "Re"),
+                      body: activeThreadMessage
+                        ? buildQuotedReplyBody(
+                            activeThreadMessage.sentAt,
+                            activeThreadMessage.sender,
+                            activeThreadMessage.body
+                          )
+                        : "",
+                      replyToMessageId: activeThreadMessage?.id
+                    });
+                  }}
                   onReply={() =>
                     openComposer(selectedAccount?.id, {
                       to: activeThreadMessage?.address ?? "",

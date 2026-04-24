@@ -58,6 +58,7 @@ export function SettingsPanel({
   const [activeTab, setActiveTab] = useState<"account" | "signature" | "notifications" | "about">("account");
   const [displayName, setDisplayName] = useState(selectedAccount?.name ?? "");
   const [imapForm, setImapForm] = useState({
+    username: selectedAccount?.username ?? "",
     incomingServer: selectedAccount?.incomingServer ?? "",
     incomingPort: selectedAccount?.incomingPort ?? 993,
     incomingSecurity: selectedAccount?.incomingSecurity ?? ("ssl_tls" as AccountSummary["incomingSecurity"])
@@ -65,10 +66,11 @@ export function SettingsPanel({
   const [smtpForm, setSmtpForm] = useState({
     outgoingServer: selectedAccount?.outgoingServer ?? "",
     outgoingPort: selectedAccount?.outgoingPort ?? 465,
-    outgoingSecurity: selectedAccount?.outgoingSecurity ?? ("ssl_tls" as AccountSummary["outgoingSecurity"])
+    outgoingSecurity: selectedAccount?.outgoingSecurity ?? ("ssl_tls" as AccountSummary["outgoingSecurity"]),
+    outgoingAuthMethod: selectedAccount?.outgoingAuthMethod ?? "auto"
   });
   const [showPasswordForm, setShowPasswordForm] = useState(false);
-  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [passwordForm, setPasswordForm] = useState({ newPassword: "", confirmPassword: "" });
   const [preferences, setPreferences] = useState<NotificationPreferences>(defaultPreferences);
   const [savingName, setSavingName] = useState(false);
   const [savingImap, setSavingImap] = useState(false);
@@ -81,6 +83,7 @@ export function SettingsPanel({
     if (!selectedAccount) return;
     setDisplayName(selectedAccount.name);
     setImapForm({
+      username: selectedAccount.username,
       incomingServer: selectedAccount.incomingServer,
       incomingPort: selectedAccount.incomingPort,
       incomingSecurity: selectedAccount.incomingSecurity
@@ -88,7 +91,8 @@ export function SettingsPanel({
     setSmtpForm({
       outgoingServer: selectedAccount.outgoingServer,
       outgoingPort: selectedAccount.outgoingPort,
-      outgoingSecurity: selectedAccount.outgoingSecurity
+      outgoingSecurity: selectedAccount.outgoingSecurity,
+      outgoingAuthMethod: selectedAccount.outgoingAuthMethod
     });
   }, [selectedAccount?.id]);
 
@@ -179,6 +183,13 @@ export function SettingsPanel({
                     <span>Email address</span>
                     <input disabled value={selectedAccount.address} />
                   </label>
+                  <label className="field">
+                    <span>Username</span>
+                    <input
+                      onChange={(e) => setImapForm((current) => ({ ...current, username: e.target.value }))}
+                      value={imapForm.username}
+                    />
+                  </label>
                 </div>
                 <div className="settings-inline-actions">
                   <button
@@ -204,6 +215,13 @@ export function SettingsPanel({
               <div className="settings-card">
                 <span className="eyebrow eyebrow-inverse">Incoming IMAP</span>
                 <div className="settings-form-grid">
+                  <label className="field">
+                    <span>Username</span>
+                    <input
+                      onChange={(e) => setImapForm((c) => ({ ...c, username: e.target.value }))}
+                      value={imapForm.username}
+                    />
+                  </label>
                   <label className="field">
                     <span>Host</span>
                     <input
@@ -289,6 +307,23 @@ export function SettingsPanel({
                       <option value="plain">Plain</option>
                     </select>
                   </label>
+                  <label className="field">
+                    <span>SMTP auth</span>
+                    <select
+                      onChange={(e) =>
+                        setSmtpForm((c) => ({
+                          ...c,
+                          outgoingAuthMethod: e.target.value as AccountSummary["outgoingAuthMethod"]
+                        }))
+                      }
+                      value={smtpForm.outgoingAuthMethod}
+                    >
+                      <option value="auto">Automatic</option>
+                      <option value="plain">AUTH PLAIN</option>
+                      <option value="login">AUTH LOGIN</option>
+                      <option value="none">No SMTP auth</option>
+                    </select>
+                  </label>
                 </div>
                 <div className="settings-inline-actions">
                   <button
@@ -335,14 +370,6 @@ export function SettingsPanel({
                   <div className="settings-inline-form">
                     <div className="settings-form-grid">
                       <label className="field">
-                        <span>Current password</span>
-                        <input
-                          onChange={(e) => setPasswordForm((c) => ({ ...c, currentPassword: e.target.value }))}
-                          type="password"
-                          value={passwordForm.currentPassword}
-                        />
-                      </label>
-                      <label className="field">
                         <span>New password</span>
                         <input
                           onChange={(e) => setPasswordForm((c) => ({ ...c, newPassword: e.target.value }))}
@@ -376,7 +403,7 @@ export function SettingsPanel({
                             setSavingPassword
                           ).then(() => {
                             setShowPasswordForm(false);
-                            setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+                            setPasswordForm({ newPassword: "", confirmPassword: "" });
                           }).catch(() => { /* errors handled inside runWorkspaceAction */ });
                         }}
                         type="button"

@@ -174,7 +174,7 @@ const showIncomingMessageNotifications = (
       const notification = new Notification({
         title: "DejAzmach",
         body: `${newMessages.length} new messages in ${accountAddress}`,
-        silent: false
+        silent: !preferences.soundAlert
       });
 
       notification.on("click", focusMainWindow);
@@ -186,7 +186,7 @@ const showIncomingMessageNotifications = (
       const notification = new Notification({
         title: message.sender || accountAddress,
         body: message.subject || "(no subject)",
-        silent: false
+        silent: !preferences.soundAlert
       });
 
       notification.on("click", focusMainWindow);
@@ -271,41 +271,40 @@ const syncAllAccountInboxes = async () => {
     const service = requireMailService();
     const accounts = service.listAccountsForSync();
     let latestSnapshot = service.getWorkspaceSnapshot(createWorkspaceContext());
-    let foundNewMessages = false;
-
     for (const account of accounts) {
       if (account.needsReauth) {
         continue;
       }
 
-      try {
-        const result = await syncFolderAndBroadcast(
-          {
-            accountId: account.id,
-            folderName: "INBOX",
-            limit: 20
-          },
-          {
-            notify: true,
-            recordActivity: false,
-            broadcast: false
+      const folderNames = Array.from(new Set(["INBOX", ...service.listSyncFolderNames(account.id)].filter(Boolean)));
+
+      for (const folderName of folderNames) {
+        try {
+          const result = await syncFolderAndBroadcast(
+            {
+              accountId: account.id,
+              folderName,
+              limit: 20
+            },
+            {
+              notify: true,
+              recordActivity: false,
+              broadcast: false
+            }
+          );
+          latestSnapshot = result.snapshot;
+        } catch (error) {
+          if (isReauthMessage(error)) {
+            service.markNeedsReauth(account.id);
+            break;
           }
-        );
-        latestSnapshot = result.snapshot;
-        foundNewMessages = foundNewMessages || result.newMessages.length > 0;
-      } catch (error) {
-        if (isReauthMessage(error)) {
-          service.markNeedsReauth(account.id);
-          continue;
+          console.error(`Background sync failed for ${account.address} in ${folderName}.`, error);
         }
-        console.error(`Background inbox sync failed for ${account.address}.`, error);
       }
     }
 
     updateUnreadBadge(latestSnapshot);
-    if (foundNewMessages) {
-      pushWorkspaceSnapshot(latestSnapshot);
-    }
+    pushWorkspaceSnapshot(latestSnapshot);
   } finally {
     backgroundSyncRunning = false;
   }
@@ -576,7 +575,7 @@ app.whenReady().then(async () => {
     try {
       return {
         ok: true as const,
-        data: requireMailService().setSignature(input.accountId, input.body)
+        data: requireMailService().setSignature(input.accountId, input.html, input.plainText, input.format)
       };
     } catch (error) {
       return {

@@ -48,6 +48,7 @@ export type VerificationSummary = {
   smtp: {
     secured: boolean;
     authMethod: string;
+    error?: string;
   };
 };
 
@@ -111,6 +112,25 @@ type ImapMessageMutationInput = {
 
 type ImapMoveMessageInput = ImapMessageMutationInput & {
   targetFolderName: string;
+};
+
+type ImapAppendDraftInput = {
+  username: string;
+  password: string;
+  incomingServer: string;
+  incomingPort: number;
+  incomingSecurity: TransportSecurity;
+  folderName: string;
+  fromAddress: string;
+  fromName: string;
+  to: string;
+  cc?: string;
+  subject: string;
+  body: string;
+  htmlBody?: string;
+  attachments?: Array<{ filename: string; mimeType: string; data: string }>;
+  inReplyTo?: string;
+  references?: string[];
 };
 
 type Reply = {
@@ -868,6 +888,33 @@ const runImapLiteralCommand = async (socket: LineSocket, tag: string, command: s
   return { lines, literals };
 };
 
+const runImapAppendCommand = async (socket: LineSocket, tag: string, command: string, literal: string) => {
+  socket.write(`${tag} ${command} {${Buffer.byteLength(literal, "utf8")}}\r\n`);
+  const continuation = await socket.readLine();
+
+  if (!continuation.startsWith("+")) {
+    throw new Error(`IMAP APPEND failed: ${continuation}`);
+  }
+
+  socket.write(`${literal}\r\n`);
+  const lines: string[] = [continuation];
+
+  while (true) {
+    const line = await socket.readLine();
+    lines.push(line);
+    if (line.startsWith(`${tag} `)) {
+      break;
+    }
+  }
+
+  const finalLine = lines[lines.length - 1] ?? "";
+  if (!new RegExp(`^${tag} OK\\b`).test(finalLine)) {
+    throw new Error(`IMAP APPEND failed: ${finalLine}`);
+  }
+
+  return lines;
+};
+
 const decodeQuotedPrintableBuffer = (input: string) => {
   const normalized = input.replace(/=\r?\n/g, "");
   const bytes: number[] = [];
@@ -1340,11 +1387,15 @@ export const verifyAccountConnection = async (input: AccountConnectionInput): Pr
     throw new Error(describeTransportError(error, "IMAP", input.incomingServer, input.incomingPort));
   }
 
-  let smtp;
+  let smtp: VerificationSummary["smtp"];
   try {
     smtp = await connectSmtp(input);
   } catch (error) {
-    throw new Error(describeTransportError(error, "SMTP", input.outgoingServer, input.outgoingPort));
+    smtp = {
+      secured: false,
+      authMethod: "unverified",
+      error: describeTransportError(error, "SMTP", input.outgoingServer, input.outgoingPort)
+    };
   }
 
   return {
@@ -1472,6 +1523,30 @@ export const moveImapMessage = async (input: ImapMoveMessageInput) => {
     await runImapCommand(socket, "V0005", "EXPUNGE");
   } finally {
     await logoutImapSocket(socket, "V0006");
+  }
+};
+
+export const appendImapDraftMessage = async (input: ImapAppendDraftInput) => {
+  const folderName = assertValidFolderName(input.folderName);
+  const socket = await createAuthenticatedImapSocket(input);
+
+  try {
+    const message = buildPlainTextMessage({
+      fromAddress: input.fromAddress,
+      fromName: input.fromName,
+      to: input.to,
+      cc: input.cc,
+      subject: input.subject,
+      body: input.body,
+      htmlBody: input.htmlBody,
+      attachments: input.attachments,
+      inReplyTo: input.inReplyTo,
+      references: input.references
+    });
+
+    await runImapAppendCommand(socket, "AP0002", `APPEND ${escapeImapString(folderName)}`, message);
+  } finally {
+    await logoutImapSocket(socket, "AP0003");
   }
 };
 

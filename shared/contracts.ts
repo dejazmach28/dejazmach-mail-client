@@ -56,6 +56,7 @@ export type AccountSummary = {
   name: string;
   address: string;
   provider: string;
+  username: string;
   status: AccountStatus;
   lastSync: string;
   unreadCount: number;
@@ -67,6 +68,7 @@ export type AccountSummary = {
   outgoingServer: string;
   outgoingPort: number;
   outgoingSecurity: TransportSecurity;
+  outgoingAuthMethod: SmtpAuthMethod;
 };
 
 export type FolderSummary = {
@@ -216,9 +218,19 @@ export type SaveAttachmentResult = {
   path: string | null;
 };
 
+export type SignatureFormat = "html" | "plain";
+
+export type SignatureRecord = {
+  html: string;
+  plainText: string;
+  format: SignatureFormat;
+};
+
 export type SignatureInput = {
   accountId: string;
-  body: string;
+  html: string;
+  plainText: string;
+  format: SignatureFormat;
 };
 
 export type ReauthAccountInput = {
@@ -233,6 +245,7 @@ export type UpdateAccountDisplayNameInput = {
 
 export type UpdateAccountImapInput = {
   accountId: string;
+  username: string;
   incomingServer: string;
   incomingPort: number;
   incomingSecurity: TransportSecurity;
@@ -243,6 +256,7 @@ export type UpdateAccountSmtpInput = {
   outgoingServer: string;
   outgoingPort: number;
   outgoingSecurity: TransportSecurity;
+  outgoingAuthMethod: SmtpAuthMethod;
 };
 
 export type NotificationPreferences = {
@@ -278,8 +292,8 @@ export type DesktopApi = {
   markSpam: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   moveMessage: (input: MoveMessageInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   archiveMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
-  getSignature: (accountId: string) => Promise<ActionResult<{ body: string }>>;
-  setSignature: (input: SignatureInput) => Promise<ActionResult<{ body: string }>>;
+  getSignature: (accountId: string) => Promise<ActionResult<SignatureRecord>>;
+  setSignature: (input: SignatureInput) => Promise<ActionResult<SignatureRecord>>;
   reauthAccount: (input: ReauthAccountInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   updateAccountDisplayName: (input: UpdateAccountDisplayNameInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   updateAccountImap: (input: UpdateAccountImapInput) => Promise<ActionResult<WorkspaceSnapshot>>;

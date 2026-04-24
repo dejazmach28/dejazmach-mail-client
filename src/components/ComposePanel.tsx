@@ -42,8 +42,6 @@ const stripHtmlToPlainText = (html: string) =>
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-const looksLikeHtml = (value: string) => /<[^>]+>/.test(value);
-
 const isEffectivelyEmptyHtml = (value?: string) =>
   !value ||
   value
@@ -70,6 +68,21 @@ export function ComposePanel({
   const signatureInjectedForAccountRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const isFreshComposer =
+      !draftForm.to.trim() &&
+      !(draftForm.cc ?? "").trim() &&
+      !(draftForm.bcc ?? "").trim() &&
+      !draftForm.subject.trim() &&
+      !draftForm.body.trim() &&
+      isEffectivelyEmptyHtml(draftForm.htmlBody) &&
+      (draftForm.attachments?.length ?? 0) === 0;
+
+    if (isFreshComposer) {
+      signatureInjectedForAccountRef.current = null;
+    }
+  }, [draftForm.attachments, draftForm.bcc, draftForm.body, draftForm.cc, draftForm.htmlBody, draftForm.subject, draftForm.to]);
+
+  useEffect(() => {
     const hasPlainContent = draftForm.body.trim().length > 0;
     const hasHtmlContent = !isEffectivelyEmptyHtml(draftForm.htmlBody);
 
@@ -84,20 +97,26 @@ export function ComposePanel({
     }
 
     void window.desktopApi.getSignature(draftForm.accountId).then((result) => {
-      if (!result.ok || !result.data.body.trim()) {
+      if (!result.ok) {
         return;
       }
 
-      const signature = result.data.body.trim();
+      const signature = result.data;
+      const signatureHtml = signature.html.trim();
+      const signaturePlain = signature.plainText.trim();
+      if (!signatureHtml && !signaturePlain) {
+        return;
+      }
+
       signatureInjectedForAccountRef.current = draftForm.accountId;
-      if (looksLikeHtml(signature)) {
-        const htmlSignature = `<p><br /></p><p><br /></p><div class="signature-divider">-- </div>${signature}`;
+      if (signature.format === "html" && signatureHtml) {
+        const htmlSignature = `<p><br /></p><p><br /></p><div class="signature-divider">-- </div>${signatureHtml}`;
         onFieldChange("htmlBody", htmlSignature);
-        onFieldChange("body", `\n\n-- \n${stripHtmlToPlainText(signature)}`);
+        onFieldChange("body", `\n\n-- \n${signaturePlain || stripHtmlToPlainText(signatureHtml)}`);
         return;
       }
 
-      onFieldChange("body", `\n\n-- \n${signature}`);
+      onFieldChange("body", `\n\n-- \n${signaturePlain}`);
     });
   }, [draftForm.accountId, draftForm.body, draftForm.htmlBody, onFieldChange]);
 

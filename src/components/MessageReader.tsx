@@ -13,6 +13,7 @@ type MessageReaderProps = {
   onMove: (targetFolderName: string) => void;
   onToggleFlag: (flagged: boolean) => void;
   onReply: () => void;
+  onReplyAll: () => void;
   onForward: () => void;
   onBack?: () => void;
 };
@@ -149,6 +150,7 @@ export function MessageReader({
   onMove,
   onToggleFlag,
   onReply,
+  onReplyAll,
   onForward,
   onBack
 }: MessageReaderProps) {
@@ -390,6 +392,9 @@ export function MessageReader({
               <div className="thread-inline-reply">
                 <button className="btn-action btn-action-reply" onClick={onReply} type="button">
                   ↩ Reply
+                </button>
+                <button className="btn-action" onClick={onReplyAll} type="button">
+                  ↺ Reply all
                 </button>
                 <button className="btn-action" onClick={onForward} type="button">
                   ↪ Forward

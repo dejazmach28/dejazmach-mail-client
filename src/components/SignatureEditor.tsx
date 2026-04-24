@@ -9,8 +9,6 @@ type SignatureEditorProps = {
 
 type SignatureMode = "design" | "html" | "plain";
 
-const looksLikeHtml = (value: string) => /<[^>]+>/.test(value);
-
 const plainTextToHtml = (value: string) =>
   value
     .split(/\r?\n/)
@@ -40,7 +38,9 @@ const htmlToPlain = (html: string) =>
     .trim();
 
 export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
-  const [body, setBody] = useState("");
+  const [htmlBody, setHtmlBody] = useState("");
+  const [plainText, setPlainText] = useState("");
+  const [format, setFormat] = useState<"html" | "plain">("plain");
   const [mode, setMode] = useState<SignatureMode>("design");
   const [isSaving, setIsSaving] = useState(false);
   const htmlFileInputRef = useRef<HTMLInputElement>(null);
@@ -56,23 +56,28 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
         return;
       }
 
-      const nextBody = result.data.body;
-      setBody(nextBody);
-      setMode(looksLikeHtml(nextBody) ? "design" : "plain");
+      setHtmlBody(result.data.html);
+      setPlainText(result.data.plainText);
+      setFormat(result.data.format);
+      setMode(result.data.format === "html" ? "design" : "plain");
     });
   }, [accountId]);
 
   const renderedPreview = useMemo(() => {
-    if (!body.trim()) {
+    if (format === "plain" && !plainText.trim()) {
       return "";
     }
 
-    if (mode === "plain") {
-      return plainTextToHtml(body);
+    if (format === "html" && !htmlBody.trim()) {
+      return "";
     }
 
-    return DOMPurify.sanitize(body);
-  }, [body, mode]);
+    if (format === "plain") {
+      return plainTextToHtml(plainText);
+    }
+
+    return DOMPurify.sanitize(htmlBody);
+  }, [format, htmlBody, plainText]);
 
   const handleFileImport = async (file: File | null) => {
     if (!file) {
@@ -98,13 +103,24 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
     if (file.type.startsWith("image/")) {
       const dataUrl = await readAsDataUrl();
       setMode("design");
-      setBody((current) => `${current}${current ? "<p><br /></p>" : ""}<img src="${dataUrl}" alt="${file.name}" />`);
+      setFormat("html");
+      setHtmlBody((current) => `${current}${current ? "<p><br /></p>" : ""}<img src="${dataUrl}" alt="${file.name}" />`);
+      setPlainText((current) => current);
       return;
     }
 
     const content = await readAsText();
-    setMode(looksLikeHtml(content) ? "html" : "plain");
-    setBody(content);
+    if (/<[^>]+>/.test(content)) {
+      setFormat("html");
+      setMode("html");
+      setHtmlBody(content);
+      setPlainText(htmlToPlain(content));
+    } else {
+      setFormat("plain");
+      setMode("plain");
+      setPlainText(content);
+      setHtmlBody("");
+    }
   };
 
   const handlePasteHtml = async () => {
@@ -117,8 +133,17 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
       return;
     }
 
-    setMode(looksLikeHtml(clipboardText) ? "html" : "plain");
-    setBody(clipboardText);
+    if (/<[^>]+>/.test(clipboardText)) {
+      setFormat("html");
+      setMode("html");
+      setHtmlBody(clipboardText);
+      setPlainText(htmlToPlain(clipboardText));
+    } else {
+      setFormat("plain");
+      setMode("plain");
+      setPlainText(clipboardText);
+      setHtmlBody("");
+    }
   };
 
   const handleSave = async () => {
@@ -129,11 +154,20 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
     setIsSaving(true);
 
     try {
-      const valueToSave = mode === "plain" ? body : body.trim();
-      const result = await window.desktopApi.setSignature({ accountId, body: valueToSave });
+      const nextFormat = mode === "plain" ? "plain" : "html";
+      const nextHtml = nextFormat === "html" ? htmlBody.trim() : "";
+      const nextPlainText = nextFormat === "html" ? htmlToPlain(htmlBody) : plainText;
+      const result = await window.desktopApi.setSignature({
+        accountId,
+        html: nextHtml,
+        plainText: nextPlainText,
+        format: nextFormat
+      });
       if (!result.ok) {
         throw new Error(result.error);
       }
+      setFormat(nextFormat);
+      setPlainText(nextPlainText);
       onSaved();
     } finally {
       setIsSaving(false);
@@ -141,7 +175,9 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
   };
 
   const handleClear = async () => {
-    setBody("");
+    setHtmlBody("");
+    setPlainText("");
+    setFormat("plain");
 
     if (!window.desktopApi) {
       return;
@@ -150,7 +186,12 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
     setIsSaving(true);
 
     try {
-      const result = await window.desktopApi.setSignature({ accountId, body: "" });
+      const result = await window.desktopApi.setSignature({
+        accountId,
+        html: "",
+        plainText: "",
+        format: "plain"
+      });
       if (!result.ok) {
         throw new Error(result.error);
       }
@@ -171,21 +212,30 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
       <div className="signature-toolbar">
         <button
           className={mode === "design" ? "settings-tab settings-tab-active" : "settings-tab"}
-          onClick={() => setMode("design")}
+          onClick={() => {
+            setMode("design");
+            setFormat("html");
+          }}
           type="button"
         >
           Design
         </button>
         <button
           className={mode === "html" ? "settings-tab settings-tab-active" : "settings-tab"}
-          onClick={() => setMode("html")}
+          onClick={() => {
+            setMode("html");
+            setFormat("html");
+          }}
           type="button"
         >
           HTML source
         </button>
         <button
           className={mode === "plain" ? "settings-tab settings-tab-active" : "settings-tab"}
-          onClick={() => setMode("plain")}
+          onClick={() => {
+            setMode("plain");
+            setFormat("plain");
+          }}
           type="button"
         >
           Plain text
@@ -221,10 +271,12 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
         <div className="field field-full signature-editor-field">
           <span>Visual signature</span>
           <RichTextEditor
-            onChange={(html) => {
-              setBody(html);
+            onChange={(html, plain) => {
+              setFormat("html");
+              setHtmlBody(html);
+              setPlainText(plain);
             }}
-            value={looksLikeHtml(body) ? body : plainTextToHtml(body)}
+            value={htmlBody || plainTextToHtml(plainText)}
           />
         </div>
       ) : mode === "html" ? (
@@ -232,10 +284,14 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
           <span>HTML source</span>
           <textarea
             className="signature-textarea signature-source-textarea"
-            onChange={(event) => setBody(event.target.value)}
+            onChange={(event) => {
+              setFormat("html");
+              setHtmlBody(event.target.value);
+              setPlainText(htmlToPlain(event.target.value));
+            }}
             rows={14}
             spellCheck={false}
-            value={body}
+            value={htmlBody}
           />
         </label>
       ) : (
@@ -243,9 +299,12 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
           <span>Plain text signature</span>
           <textarea
             className="signature-textarea"
-            onChange={(event) => setBody(event.target.value)}
+            onChange={(event) => {
+              setFormat("plain");
+              setPlainText(event.target.value);
+            }}
             rows={10}
-            value={body}
+            value={plainText}
           />
         </label>
       )}
@@ -261,7 +320,7 @@ export function SignatureEditor({ accountId, onSaved }: SignatureEditorProps) {
       ) : null}
 
       <span className="signature-count">
-        {mode === "plain" ? body.length : htmlToPlain(body).length} characters
+        {(format === "plain" ? plainText : htmlToPlain(htmlBody)).length} characters
       </span>
 
       <div className="compose-actions compose-actions-inline">

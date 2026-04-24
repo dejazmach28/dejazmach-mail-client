@@ -11,6 +11,7 @@ import type {
   MessageContentMode,
   NotificationPreferences,
   RuntimeEnvironment,
+  SignatureRecord,
   SyncFolderInput,
   SmtpAuthMethod,
   ToggleFlagInput,
@@ -23,6 +24,7 @@ import type {
 } from "../shared/contracts.js";
 import type { InboxHeader } from "./providerClient.js";
 import {
+  appendImapDraftMessage,
   deleteImapMessage,
   describeTransportError,
   fetchImapFolderHeaders,
@@ -120,6 +122,12 @@ const textPreview = (value: string) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 140);
+
+const normalizeThreadSubject = (value: string) =>
+  (value || "No subject")
+    .replace(/^\s*((re|fwd?):\s*)+/gi, "")
+    .trim()
+    .toLowerCase();
 
 const formatMailListTime = (value: string) => {
   if (!value) {
@@ -310,6 +318,9 @@ export class MailService {
       CREATE TABLE IF NOT EXISTS signatures (
         account_id TEXT PRIMARY KEY,
         body TEXT NOT NULL,
+        html_body TEXT NOT NULL DEFAULT '',
+        plain_text TEXT NOT NULL DEFAULT '',
+        format TEXT NOT NULL DEFAULT 'plain',
         updated_at INTEGER NOT NULL
       );
 
@@ -324,6 +335,7 @@ export class MailService {
     this.ensureAccountTransportColumns();
     this.ensureFolderColumns();
     this.ensureMessageRemoteColumns();
+    this.ensureSignatureColumns();
     this.database
       .prepare(
         `
@@ -411,6 +423,42 @@ export class MailService {
     if (!columns.has("remote_folder_name")) {
       this.database.exec("ALTER TABLE messages ADD COLUMN remote_folder_name TEXT;");
     }
+  }
+
+  private ensureSignatureColumns() {
+    const columns = new Set(
+      (this.database.prepare("PRAGMA table_info(signatures)").all() as Array<{ name: string }>).map((column) => column.name)
+    );
+
+    if (!columns.has("html_body")) {
+      this.database.exec("ALTER TABLE signatures ADD COLUMN html_body TEXT NOT NULL DEFAULT '';");
+    }
+
+    if (!columns.has("plain_text")) {
+      this.database.exec("ALTER TABLE signatures ADD COLUMN plain_text TEXT NOT NULL DEFAULT '';");
+    }
+
+    if (!columns.has("format")) {
+      this.database.exec("ALTER TABLE signatures ADD COLUMN format TEXT NOT NULL DEFAULT 'plain';");
+    }
+
+    this.database.exec(`
+      UPDATE signatures
+      SET
+        html_body = CASE
+          WHEN html_body = '' AND body LIKE '%<%>%' THEN body
+          ELSE html_body
+        END,
+        plain_text = CASE
+          WHEN plain_text = '' THEN body
+          ELSE plain_text
+        END,
+        format = CASE
+          WHEN format NOT IN ('plain', 'html') THEN
+            CASE WHEN body LIKE '%<%>%' THEN 'html' ELSE 'plain' END
+          ELSE format
+        END
+    `);
   }
 
   private ensureReferenceData() {
@@ -670,6 +718,7 @@ export class MailService {
           name,
           address,
           provider,
+          username,
           status,
           last_sync AS lastSync,
           unread_count AS unreadCount,
@@ -680,7 +729,8 @@ export class MailService {
           incoming_security AS incomingSecurity,
           outgoing_server AS outgoingServer,
           outgoing_port AS outgoingPort,
-          outgoing_security AS outgoingSecurity
+          outgoing_security AS outgoingSecurity,
+          outgoing_auth_method AS outgoingAuthMethod
         FROM accounts
         ORDER BY created_at ASC
       `)
@@ -737,7 +787,7 @@ export class MailService {
         .prepare(`
         SELECT *
         FROM messages
-        ORDER BY created_at DESC
+        ORDER BY COALESCE(remote_uid, 0) ASC, created_at ASC
         `)
         .all() as MessageRow[];
 
@@ -817,11 +867,11 @@ export class MailService {
             },
             {
               label: "Credential storage",
-              value: this.input.cipher.isAvailable() ? "Encrypted local vault" : "Metadata only",
+              value: this.input.cipher.isAvailable() ? "Encrypted local vault" : "Local fallback storage",
               status: this.input.cipher.isAvailable() ? "active" : "monitoring",
               detail: this.input.cipher.isAvailable()
                 ? "Account secrets are encrypted locally before being persisted."
-                : "Electron safeStorage is unavailable in this environment, so secrets should not be trusted yet."
+                : "Electron safeStorage is unavailable in this environment, so account secrets are stored in a local fallback path."
             },
             {
               label: "Message rendering",
@@ -1056,6 +1106,65 @@ export class MailService {
     };
   }
 
+  private findExistingThreadBySubject(accountId: string, subject: string) {
+    const normalizedSubject = normalizeThreadSubject(subject);
+
+    if (!normalizedSubject) {
+      return undefined;
+    }
+
+    return this.database
+      .prepare(
+        `
+          SELECT threads.id
+          FROM threads
+          JOIN messages ON messages.thread_id = threads.id
+          WHERE messages.account_id = ?
+            AND LOWER(
+              TRIM(
+                REPLACE(
+                  REPLACE(
+                    REPLACE(
+                      REPLACE(threads.subject, 'Re: ', ''),
+                      'RE: ',
+                      ''
+                    ),
+                    'Fwd: ',
+                    ''
+                  ),
+                  'FWD: ',
+                  ''
+                )
+              )
+            ) = ?
+          ORDER BY messages.created_at DESC
+          LIMIT 1
+        `
+      )
+      .get(accountId, normalizedSubject) as { id: string } | undefined;
+  }
+
+  listSyncFolderNames(accountId: string) {
+    try {
+      return (
+        this.database
+          .prepare(
+            `
+              SELECT name
+              FROM folders
+              WHERE account_id = ?
+                AND source = 'remote'
+              ORDER BY sort_order ASC, LOWER(name) ASC
+            `
+          )
+          .all(accountId) as Array<{ name: string }>
+      ).map((folder) => folder.name);
+    } catch (error) {
+      console.error("Failed to list sync folders.", error);
+      return [];
+    }
+  }
+
   private ensureFolder(accountId: string, name: string, kind: WorkspaceSnapshot["folders"][number]["kind"], source: "remote" | "local") {
     const existing = this.database
       .prepare(
@@ -1090,6 +1199,27 @@ export class MailService {
       .get(...(name ? [accountId, kind, name] : [accountId, kind])) as { id: string } | undefined;
 
     return folder?.id ?? "";
+  }
+
+  private findFolderByKind(accountId: string, kind: WorkspaceSnapshot["folders"][number]["kind"]) {
+    return this.database
+      .prepare(
+        `
+          SELECT id, name, kind, source
+          FROM folders
+          WHERE account_id = ? AND kind = ?
+          ORDER BY source DESC, sort_order ASC
+          LIMIT 1
+        `
+      )
+      .get(accountId, kind) as
+      | {
+          id: string;
+          name: string;
+          kind: WorkspaceSnapshot["folders"][number]["kind"];
+          source: "remote" | "local";
+        }
+      | undefined;
   }
 
   private findFolderRecord(accountId: string, folderName: string) {
@@ -1240,7 +1370,9 @@ export class MailService {
       const sender = header.fromName || header.fromAddress || "Unknown sender";
       const sentAt = header.date || "Unknown date";
       const preview = header.preview.trim();
-      const participants = JSON.stringify([header.fromAddress || sender]);
+      const participants = JSON.stringify(
+        [header.fromAddress || sender, header.to ?? "", header.cc ?? ""].filter(Boolean)
+      );
       const existing = findExisting.get(accountId, header.uid, header.remoteMessageRef) as
         | {
             id: string;
@@ -1275,9 +1407,14 @@ export class MailService {
       }
 
       const createdAt = nowIso();
-      const threadId = makeId("thread");
+      const relatedThread = this.findExistingThreadBySubject(accountId, header.subject);
+      const threadId = relatedThread?.id ?? makeId("thread");
       const messageId = makeId("message");
-      insertThread.run(threadId, header.subject, folderName, participants, createdAt);
+      if (relatedThread) {
+        updateThread.run(header.subject, folderName, participants, threadId);
+      } else {
+        insertThread.run(threadId, header.subject, folderName, participants, createdAt);
+      }
       insertMessage.run(
         messageId,
         threadId,
@@ -1292,7 +1429,7 @@ export class MailService {
         header.unread ? 1 : 0,
         "review",
         sentAt,
-        "Message body not loaded yet. Open this message to fetch the full RFC822 body from IMAP.",
+        "",
         null,
         "[]",
         1,
@@ -1443,9 +1580,9 @@ export class MailService {
 
   createDraft(input: CreateDraftInput, context: WorkspaceContext): WorkspaceSnapshot {
     const createdAt = nowIso();
-    const threadId = makeId("thread");
     const subject = input.subject.trim() || "Untitled draft";
     const body = input.body.trim();
+    const htmlBody = input.htmlBody?.trim() ?? "";
     const account = this.database
       .prepare("SELECT name, address FROM accounts WHERE id = ?")
       .get(input.accountId) as { name: string; address: string } | undefined;
@@ -1454,18 +1591,34 @@ export class MailService {
       throw new Error("Cannot create a draft for an unknown account.");
     }
 
-    const draftsFolderId = this.findFolderId(input.accountId, "drafts") || this.ensureFolder(input.accountId, "Drafts", "drafts", "local");
+    const draftsFolderRecord =
+      this.findFolderByKind(input.accountId, "drafts") ??
+      ({
+        id: this.findFolderId(input.accountId, "drafts") || this.ensureFolder(input.accountId, "Drafts", "drafts", "local"),
+        name: "Drafts",
+        kind: "drafts" as const,
+        source: "local" as const
+      });
+    const draftsFolderId = draftsFolderRecord.id;
+    const relatedThread = this.findExistingThreadBySubject(input.accountId, subject);
+    const threadId = relatedThread?.id ?? makeId("thread");
 
-    this.database
-      .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(threadId, subject, "Draft", JSON.stringify([account.address, input.to, input.cc ?? ""]), createdAt);
+    if (relatedThread) {
+      this.database
+        .prepare("UPDATE threads SET subject = ?, classification = ?, participants_json = ? WHERE id = ?")
+        .run(subject, "Draft", JSON.stringify([account.address, input.to, input.cc ?? ""].filter(Boolean)), threadId);
+    } else {
+      this.database
+        .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(threadId, subject, "Draft", JSON.stringify([account.address, input.to, input.cc ?? ""].filter(Boolean)), createdAt);
+    }
 
     this.database
       .prepare(`
         INSERT INTO messages (
           id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         makeId("message"),
@@ -1481,11 +1634,13 @@ export class MailService {
         0,
         "trusted",
         `Today, ${displayTime()}`,
-        `To: ${input.to || "Not specified"}${input.cc?.trim() ? `\nCc: ${input.cc.trim()}` : ""}\n\n${body || "Empty draft"}`,
-        null,
-        "[]",
+        body || "Empty draft",
+        htmlBody || null,
+        JSON.stringify(input.attachments ?? []),
         1,
-        "plain",
+        htmlBody ? "plain" : "plain",
+        input.to || "",
+        input.cc ?? "",
         createdAt
       );
 
@@ -1499,6 +1654,38 @@ export class MailService {
         "info",
         createdAt
       );
+
+    try {
+      const accountWithPassword = this.requireAuthenticatedAccount(input.accountId);
+      if (draftsFolderRecord.source === "remote" && draftsFolderRecord.name) {
+        void appendImapDraftMessage({
+          username: accountWithPassword.username,
+          password: accountWithPassword.password,
+          incomingServer: accountWithPassword.incomingServer,
+          incomingPort: accountWithPassword.incomingPort,
+          incomingSecurity: accountWithPassword.incomingSecurity,
+          folderName: draftsFolderRecord.name,
+          fromAddress: account.address,
+          fromName: account.name,
+          to: input.to,
+          cc: input.cc,
+          subject,
+          body,
+          htmlBody,
+          attachments: input.attachments?.map((attachment) => ({
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            data: attachment.data
+          })),
+          inReplyTo: this.getReplyMetadata(input.replyToMessageId).inReplyTo,
+          references: this.getReplyMetadata(input.replyToMessageId).references
+        }).catch((error) => {
+          this.addLedgerEntry("Server draft append failed", String(error), "notice");
+        });
+      }
+    } catch {
+      // Local draft persistence still succeeds even when the remote draft append path cannot run.
+    }
 
     return this.getWorkspaceSnapshot(context);
   }
@@ -1595,15 +1782,15 @@ export class MailService {
 
   updateAccountImap(input: UpdateAccountImapInput, context: WorkspaceContext) {
     this.database
-      .prepare("UPDATE accounts SET incoming_server = ?, incoming_port = ?, incoming_security = ? WHERE id = ?")
-      .run(input.incomingServer, input.incomingPort, input.incomingSecurity, input.accountId);
+      .prepare("UPDATE accounts SET username = ?, incoming_server = ?, incoming_port = ?, incoming_security = ? WHERE id = ?")
+      .run(input.username, input.incomingServer, input.incomingPort, input.incomingSecurity, input.accountId);
     return this.getWorkspaceSnapshot(context);
   }
 
   updateAccountSmtp(input: UpdateAccountSmtpInput, context: WorkspaceContext) {
     this.database
-      .prepare("UPDATE accounts SET outgoing_server = ?, outgoing_port = ?, outgoing_security = ? WHERE id = ?")
-      .run(input.outgoingServer, input.outgoingPort, input.outgoingSecurity, input.accountId);
+      .prepare("UPDATE accounts SET outgoing_server = ?, outgoing_port = ?, outgoing_security = ?, outgoing_auth_method = ? WHERE id = ?")
+      .run(input.outgoingServer, input.outgoingPort, input.outgoingSecurity, input.outgoingAuthMethod, input.accountId);
     return this.getWorkspaceSnapshot(context);
   }
 
@@ -1740,16 +1927,22 @@ export class MailService {
         this.upsertRemoteHeaders(accountId, inboxFolderId, inboxFolder.name, summary.imap.headers);
       }
 
+      const accountStatus = summary.smtp.error ? "attention" : "online";
+      const lastSyncLabel = summary.smtp.error ? `Verified IMAP ${displayTime()}` : `Verified ${displayTime()}`;
       this.database
         .prepare("UPDATE accounts SET status = ?, last_sync = ?, unread_count = ? WHERE id = ?")
-        .run("online", `Verified ${displayTime()}`, Number(summary.imap.unseen ?? 0), accountId);
+        .run(accountStatus, lastSyncLabel, Number(summary.imap.unseen ?? 0), accountId);
 
       this.addLedgerEntry(
         "Provider verification succeeded",
-        `${account.address} passed IMAP and SMTP verification. ${summary.imap.folders.length} folders discovered. ${summary.imap.headers.length} inbox headers synced. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.`,
-        "info"
+        `${account.address} passed IMAP verification. ${summary.imap.folders.length} folders discovered. ${summary.imap.headers.length} inbox headers synced. Inbox unseen count is ${summary.imap.unseen ?? "unknown"}.${summary.smtp.error ? ` SMTP still needs attention: ${summary.smtp.error}` : " SMTP verification also passed."}`,
+        summary.smtp.error ? "notice" : "info"
       );
-      this.addSyncJob(`Connectivity verification for ${account.address}`, "IMAP and SMTP verification completed.", "complete");
+      this.addSyncJob(
+        `Connectivity verification for ${account.address}`,
+        summary.smtp.error ? `IMAP completed. SMTP warning: ${summary.smtp.error}` : "IMAP and SMTP verification completed.",
+        "complete"
+      );
 
       return this.getWorkspaceSnapshot(context);
     } catch (error) {
@@ -1803,18 +1996,25 @@ export class MailService {
       });
 
       const createdAt = nowIso();
-      const threadId = makeId("thread");
+      const relatedThread = this.findExistingThreadBySubject(input.accountId, subject);
+      const threadId = relatedThread?.id ?? makeId("thread");
 
-      this.database
-        .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim(), input.cc?.trim() ?? ""]), createdAt);
+      if (relatedThread) {
+        this.database
+          .prepare("UPDATE threads SET subject = ?, classification = ?, participants_json = ? WHERE id = ?")
+          .run(subject, "Sent", JSON.stringify([account.address, input.to.trim(), input.cc?.trim() ?? ""].filter(Boolean)), threadId);
+      } else {
+        this.database
+          .prepare("INSERT INTO threads (id, subject, classification, participants_json, created_at) VALUES (?, ?, ?, ?, ?)")
+          .run(threadId, subject, "Sent", JSON.stringify([account.address, input.to.trim(), input.cc?.trim() ?? ""].filter(Boolean)), createdAt);
+      }
 
       this.database
       .prepare(`
         INSERT INTO messages (
           id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
         .run(
           makeId("message"),
@@ -1830,11 +2030,13 @@ export class MailService {
           0,
           "encrypted",
           `Today, ${displayTime()}`,
-          `To: ${input.to.trim()}${input.cc?.trim() ? `\nCc: ${input.cc.trim()}` : ""}\n\n${body || "Empty message"}`,
-          null,
-          "[]",
+          body || "Empty message",
+          input.htmlBody?.trim() || null,
+          JSON.stringify(input.attachments ?? []),
           1,
           "plain",
+          input.to.trim(),
+          input.cc?.trim() ?? "",
           createdAt
         );
 
@@ -2033,29 +2235,57 @@ export class MailService {
     return this.getWorkspaceSnapshot(context);
   }
 
-  getSignature(accountId: string) {
+  getSignature(accountId: string): SignatureRecord {
     const signature = this.database
-      .prepare("SELECT body FROM signatures WHERE account_id = ? LIMIT 1")
-      .get(accountId) as { body: string } | undefined;
+      .prepare("SELECT body, html_body AS htmlBody, plain_text AS plainText, format FROM signatures WHERE account_id = ? LIMIT 1")
+      .get(accountId) as
+      | {
+          body: string;
+          htmlBody?: string;
+          plainText?: string;
+          format?: "plain" | "html";
+        }
+      | undefined;
+
+    if (!signature) {
+      return {
+        html: "",
+        plainText: "",
+        format: "plain"
+      };
+    }
+
+    const format = signature.format === "html" ? "html" : "plain";
+    const html = signature.htmlBody ?? (format === "html" ? signature.body : "");
+    const plainText = signature.plainText ?? (format === "plain" ? signature.body : "");
 
     return {
-      body: signature?.body ?? ""
+      html,
+      plainText,
+      format
     };
   }
 
-  setSignature(accountId: string, body: string) {
+  setSignature(accountId: string, html: string, plainText: string, format: "plain" | "html") {
     this.database
       .prepare(
         `
-          INSERT INTO signatures (account_id, body, updated_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(account_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at
+          INSERT INTO signatures (account_id, body, html_body, plain_text, format, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(account_id) DO UPDATE SET
+            body = excluded.body,
+            html_body = excluded.html_body,
+            plain_text = excluded.plain_text,
+            format = excluded.format,
+            updated_at = excluded.updated_at
         `
       )
-      .run(accountId, body, Date.now());
+      .run(accountId, format === "html" ? html : plainText, html, plainText, format, Date.now());
 
     return {
-      body
+      html,
+      plainText,
+      format
     };
   }
 
