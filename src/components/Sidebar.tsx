@@ -24,8 +24,20 @@ const getInitials = (value: string) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "M";
 
+const splitFolderPath = (value: string) =>
+  value
+    .split(/[/.]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const getFolderLeafName = (value: string) => {
+  const parts = splitFolderPath(value);
+  return parts[parts.length - 1] ?? value;
+};
+
 const getFolderIcon = (folder: FolderSummary) => {
-  const normalizedName = folder.name.trim().toLowerCase();
+  const normalizedName = getFolderLeafName(folder.name).trim().toLowerCase();
+  const normalizedFullName = folder.name.trim().toLowerCase();
 
   if (["inbox"].includes(normalizedName)) {
     return "✉";
@@ -43,7 +55,7 @@ const getFolderIcon = (folder: FolderSummary) => {
     return "🗑";
   }
 
-  if (["archive", "all mail", "[gmail]/all mail"].includes(normalizedName)) {
+  if (["archive", "all mail"].includes(normalizedName) || normalizedFullName === "[gmail]/all mail") {
     return "📦";
   }
 
@@ -64,7 +76,8 @@ const systemFolderOrder = [
 ] as const;
 
 const getSystemFolderKey = (folder: FolderSummary) => {
-  const normalizedName = folder.name.trim().toLowerCase();
+  const normalizedName = getFolderLeafName(folder.name).trim().toLowerCase();
+  const normalizedFullName = folder.name.trim().toLowerCase();
 
   if (normalizedName === "inbox") {
     return "inbox";
@@ -86,7 +99,7 @@ const getSystemFolderKey = (folder: FolderSummary) => {
     return "trash";
   }
 
-  if (["archive", "all mail", "[gmail]/all mail"].includes(normalizedName)) {
+  if (["archive", "all mail"].includes(normalizedName) || normalizedFullName === "[gmail]/all mail") {
     return "archive";
   }
 
@@ -113,17 +126,21 @@ const buildCustomFolderItems = (folders: FolderSummary[]) => {
   const seenParents = new Set<string>();
 
   for (const folder of folders) {
-    const parts = folder.name.split(".").filter(Boolean);
+    const parts = splitFolderPath(folder.name);
 
     if (parts.length > 1) {
-      const parentKey = parts[0].toLowerCase();
-      if (!seenParents.has(parentKey)) {
-        seenParents.add(parentKey);
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        const parentPath = parts.slice(0, index + 1).join("/").toLowerCase();
+        if (seenParents.has(parentPath)) {
+          continue;
+        }
+
+        seenParents.add(parentPath);
         items.push({
           type: "parent",
-          key: `parent:${parentKey}`,
-          label: parts[0],
-          depth: 0
+          key: `parent:${parentPath}`,
+          label: parts[index],
+          depth: index
         });
       }
     }
@@ -278,6 +295,7 @@ export function Sidebar({
                       event.preventDefault();
                       event.stopPropagation();
                     }}
+                    style={{ paddingLeft: `${12 + item.depth * 18}px` }}
                   >
                     <span className="folder-parent-chevron" aria-hidden="true">
                       ▾

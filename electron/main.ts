@@ -276,30 +276,29 @@ const syncAllAccountInboxes = async () => {
         continue;
       }
 
-      const folderNames = Array.from(new Set(["INBOX", ...service.listSyncFolderNames(account.id)].filter(Boolean)));
+      const inboxFolderName =
+        service.listSyncFolderNames(account.id).find((folderName) => folderName.toLowerCase() === "inbox") ?? "INBOX";
 
-      for (const folderName of folderNames) {
-        try {
-          const result = await syncFolderAndBroadcast(
-            {
-              accountId: account.id,
-              folderName,
-              limit: 20
-            },
-            {
-              notify: true,
-              recordActivity: false,
-              broadcast: false
-            }
-          );
-          latestSnapshot = result.snapshot;
-        } catch (error) {
-          if (isReauthMessage(error)) {
-            service.markNeedsReauth(account.id);
-            break;
+      try {
+        const result = await syncFolderAndBroadcast(
+          {
+            accountId: account.id,
+            folderName: inboxFolderName,
+            limit: 20
+          },
+          {
+            notify: true,
+            recordActivity: false,
+            broadcast: false
           }
-          console.error(`Background sync failed for ${account.address} in ${folderName}.`, error);
+        );
+        latestSnapshot = result.snapshot;
+      } catch (error) {
+        if (isReauthMessage(error)) {
+          service.markNeedsReauth(account.id);
+          continue;
         }
+        console.error(`Background sync failed for ${account.address} in ${inboxFolderName}.`, error);
       }
     }
 

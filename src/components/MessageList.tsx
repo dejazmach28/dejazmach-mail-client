@@ -9,9 +9,15 @@ type ContextSelection = {
   messageIds: string[];
 } | null;
 
+type BatchActionOutcome = {
+  failed: string[];
+  succeeded: string[];
+};
+
 type MessageListProps = {
   accountId?: string;
   folderName: string;
+  folderDisplayName: string;
   unreadCount?: number;
   isAutoSyncing?: boolean;
   isLoadingFolder?: boolean;
@@ -19,10 +25,10 @@ type MessageListProps = {
   searchQuery: string;
   selectedThreadId: string;
   selectedFolderName?: string;
-  onArchiveSelection: (messageIds: string[]) => Promise<void>;
-  onDeleteSelection: (messageIds: string[]) => Promise<void>;
-  onMarkSpamSelection: (messageIds: string[]) => Promise<void>;
-  onMarkUnreadSelection: (messageIds: string[]) => Promise<void>;
+  onArchiveSelection: (messageIds: string[]) => Promise<BatchActionOutcome>;
+  onDeleteSelection: (messageIds: string[]) => Promise<BatchActionOutcome>;
+  onMarkSpamSelection: (messageIds: string[]) => Promise<BatchActionOutcome>;
+  onMarkUnreadSelection: (messageIds: string[]) => Promise<BatchActionOutcome>;
   onOpenMessage: (messageId: string, threadId: string, accountId: string) => void;
   onSyncComplete: (workspace: WorkspaceSnapshot, folderName: string) => void;
   onSyncError: (message: string) => void;
@@ -168,6 +174,7 @@ function SkeletonRow({ index }: { index: number }) {
 export function MessageList({
   accountId,
   folderName,
+  folderDisplayName,
   unreadCount,
   isAutoSyncing,
   isLoadingFolder,
@@ -303,15 +310,15 @@ export function MessageList({
     });
   };
 
-  const runSelectionAction = async (handler: (messageIds: string[]) => Promise<void>) => {
+  const runSelectionAction = async (handler: (messageIds: string[]) => Promise<BatchActionOutcome>) => {
     if (!contextSelection) {
       return;
     }
 
     const nextIds = contextSelection.messageIds;
     setContextSelection(null);
-    await handler(nextIds);
-    setSelectedMessageIds([]);
+    const outcome = await handler(nextIds);
+    setSelectedMessageIds(outcome.failed);
   };
 
   const syncing = isAutoSyncing || isSyncing;
@@ -330,16 +337,16 @@ export function MessageList({
               ☰
             </button>
           ) : null}
-          <h2 className="pane-folder-name">{folderName || "Mailbox"}</h2>
+          <h2 className="pane-folder-name">{folderDisplayName || "Mailbox"}</h2>
           {typeof unreadCount === "number" && unreadCount > 0 ? (
             <span className="pane-unread-badge">{unreadCount}</span>
           ) : null}
           {syncing ? <span className="pane-syncing-indicator">Syncing…</span> : null}
         </div>
         <button
-          aria-label={`Refresh ${folderName}`}
+          aria-label={`Refresh ${folderDisplayName || folderName}`}
           className={syncing ? "refresh-button refresh-button-spinning" : "refresh-button"}
-          disabled={syncing || !accountId || !folderName}
+          disabled={syncing || !accountId || !folderName || folderDisplayName === "Search results"}
           onClick={() => {
             void handleSync();
           }}

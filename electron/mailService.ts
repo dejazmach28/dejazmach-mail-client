@@ -172,7 +172,7 @@ const createCapabilities = () => [
   "Blocked remote renderer requests",
   "Persisted window state",
   "Denied webviews and permission prompts",
-  "Encrypted local account secret storage",
+  "Main-process credential handling",
   "SQLite-backed local workspace state"
 ];
 
@@ -855,29 +855,29 @@ export class MailService {
           securityMetrics: [
             {
               label: "Renderer isolation",
-              value: "Context-isolated + sandboxed",
+              value: "Context-isolated renderer",
               status: "active",
-              detail: "UI code stays outside Node.js and receives only preload-approved capabilities."
+              detail: "UI code stays outside Node.js and receives only preload-approved capabilities; Chromium sandboxing can vary by package target."
             },
             {
               label: "Remote content",
-              value: "Blocked by default",
+              value: "Remote resources stripped",
               status: "active",
-              detail: "External images, trackers, and unaudited embeds stay off until a visible policy exists."
+              detail: "Formatted mail is sanitized and rendered without remote images, remote stylesheets, or active embeds."
             },
             {
               label: "Credential storage",
-              value: this.input.cipher.isAvailable() ? "Encrypted local vault" : "Local fallback storage",
+              value: this.input.cipher.isAvailable() ? "OS-backed local vault" : "Local fallback storage",
               status: this.input.cipher.isAvailable() ? "active" : "monitoring",
               detail: this.input.cipher.isAvailable()
-                ? "Account secrets are encrypted locally before being persisted."
-                : "Electron safeStorage is unavailable in this environment, so account secrets are stored in a local fallback path."
+                ? "Account secrets are encrypted through the operating-system-backed Electron vault."
+                : "Electron safeStorage is unavailable in this environment, so account secrets fall back to a local store until the account is reconfigured."
             },
             {
               label: "Message rendering",
               value: "Plain text by default",
               status: "active",
-              detail: "Plain text is available immediately, and HTML can be revealed only after client-side sanitization."
+              detail: "Plain text is available immediately, and HTML is opt-in inside a restricted iframe after sanitization."
             },
             {
               label: "Local persistence",
@@ -1106,6 +1106,16 @@ export class MailService {
     };
   }
 
+  private findThreadIdForMessage(messageId?: string) {
+    if (!messageId) {
+      return undefined;
+    }
+
+    return this.database
+      .prepare("SELECT thread_id AS threadId FROM messages WHERE id = ? LIMIT 1")
+      .get(messageId) as { threadId: string } | undefined;
+  }
+
   private findExistingThreadBySubject(accountId: string, subject: string) {
     const normalizedSubject = normalizeThreadSubject(subject);
 
@@ -1116,7 +1126,7 @@ export class MailService {
     return this.database
       .prepare(
         `
-          SELECT threads.id
+          SELECT threads.id AS threadId
           FROM threads
           JOIN messages ON messages.thread_id = threads.id
           WHERE messages.account_id = ?
@@ -1141,7 +1151,26 @@ export class MailService {
           LIMIT 1
         `
       )
-      .get(accountId, normalizedSubject) as { id: string } | undefined;
+      .get(accountId, normalizedSubject) as { threadId: string } | undefined;
+  }
+
+  private findThreadIdByRemoteReference(accountId: string, remoteReference?: string | null) {
+    if (!remoteReference) {
+      return undefined;
+    }
+
+    return this.database
+      .prepare(
+        `
+          SELECT thread_id AS threadId
+          FROM messages
+          WHERE account_id = ?
+            AND remote_message_ref = ?
+          ORDER BY created_at DESC
+          LIMIT 1
+        `
+      )
+      .get(accountId, remoteReference) as { threadId: string } | undefined;
   }
 
   listSyncFolderNames(accountId: string) {
@@ -1407,8 +1436,9 @@ export class MailService {
       }
 
       const createdAt = nowIso();
-      const relatedThread = this.findExistingThreadBySubject(accountId, header.subject);
-      const threadId = relatedThread?.id ?? makeId("thread");
+      const replyThread = this.findThreadIdByRemoteReference(accountId, header.inReplyTo);
+      const relatedThread = replyThread ?? this.findExistingThreadBySubject(accountId, header.subject);
+      const threadId = relatedThread?.threadId ?? makeId("thread");
       const messageId = makeId("message");
       if (relatedThread) {
         updateThread.run(header.subject, folderName, participants, threadId);
@@ -1489,17 +1519,54 @@ export class MailService {
     folders: Array<{ name: string; kind: WorkspaceSnapshot["folders"][number]["kind"] }>
   ) {
     console.log(`[folders] received ${folders.length} folders for account ${accountId}`);
-    this.database
-      .prepare("DELETE FROM folders WHERE account_id = ? AND account_id IS NOT NULL")
-      .run(accountId);
+    const existingRemoteFolders = this.database
+      .prepare(
+        `
+          SELECT id, name
+          FROM folders
+          WHERE account_id = ?
+            AND source = 'remote'
+        `
+      )
+      .all(accountId) as Array<{ id: string; name: string }>;
 
+    const existingByName = new Map(existingRemoteFolders.map((folder) => [folder.name.toLowerCase(), folder]));
+    const seenFolderIds = new Set<string>();
     const insertFolder = this.database.prepare(
       "INSERT INTO folders (id, account_id, name, kind, source, sort_order) VALUES (?, ?, ?, ?, 'remote', ?)"
     );
+    const updateFolder = this.database.prepare(
+      "UPDATE folders SET name = ?, kind = ?, source = 'remote', sort_order = ? WHERE id = ?"
+    );
+    const deleteEmptyFolder = this.database.prepare(
+      `
+        DELETE FROM folders
+        WHERE id = ?
+          AND account_id = ?
+          AND source = 'remote'
+          AND NOT EXISTS (SELECT 1 FROM messages WHERE folder_id = folders.id)
+      `
+    );
 
     for (const folder of folders) {
+      const existing = existingByName.get(folder.name.toLowerCase());
+      if (existing) {
+        console.log(`[folders] updating folder for ${accountId}: ${folder.name}`);
+        updateFolder.run(folder.name, folder.kind, folderSortOrder(folder.kind, folder.name), existing.id);
+        seenFolderIds.add(existing.id);
+        continue;
+      }
+
       console.log(`[folders] inserting folder for ${accountId}: ${folder.name}`);
-      insertFolder.run(makeId("folder"), accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
+      const folderId = makeId("folder");
+      insertFolder.run(folderId, accountId, folder.name, folder.kind, folderSortOrder(folder.kind, folder.name));
+      seenFolderIds.add(folderId);
+    }
+
+    for (const existing of existingRemoteFolders) {
+      if (!seenFolderIds.has(existing.id)) {
+        deleteEmptyFolder.run(existing.id, accountId);
+      }
     }
 
     if (folders.length === 0) {
@@ -1578,7 +1645,7 @@ export class MailService {
     return this.getWorkspaceSnapshot(context);
   }
 
-  createDraft(input: CreateDraftInput, context: WorkspaceContext): WorkspaceSnapshot {
+  async createDraft(input: CreateDraftInput, context: WorkspaceContext): Promise<WorkspaceSnapshot> {
     const createdAt = nowIso();
     const subject = input.subject.trim() || "Untitled draft";
     const body = input.body.trim();
@@ -1591,6 +1658,7 @@ export class MailService {
       throw new Error("Cannot create a draft for an unknown account.");
     }
 
+    const replyMetadata = this.getReplyMetadata(input.replyToMessageId);
     const draftsFolderRecord =
       this.findFolderByKind(input.accountId, "drafts") ??
       ({
@@ -1599,9 +1667,64 @@ export class MailService {
         kind: "drafts" as const,
         source: "local" as const
       });
+
+    if (draftsFolderRecord.source === "remote") {
+      try {
+        const accountWithPassword = this.requireAuthenticatedAccount(input.accountId);
+        await appendImapDraftMessage({
+          username: accountWithPassword.username,
+          password: accountWithPassword.password,
+          incomingServer: accountWithPassword.incomingServer,
+          incomingPort: accountWithPassword.incomingPort,
+          incomingSecurity: accountWithPassword.incomingSecurity,
+          folderName: draftsFolderRecord.name,
+          fromAddress: account.address,
+          fromName: account.name,
+          to: input.to,
+          cc: input.cc,
+          subject,
+          body,
+          htmlBody,
+          attachments: input.attachments?.map((attachment) => ({
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            data: attachment.data
+          })),
+          inReplyTo: replyMetadata.inReplyTo,
+          references: replyMetadata.references
+        });
+
+        const result = await this.syncFolderWithResult(
+          {
+            accountId: input.accountId,
+            folderName: draftsFolderRecord.name,
+            limit: 100
+          },
+          context,
+          { recordActivity: false }
+        );
+
+        this.addLedgerEntry(
+          "Draft stored on server",
+          `A draft for ${input.to || "unspecified recipient"} was appended to ${draftsFolderRecord.name}.`,
+          "info"
+        );
+
+        return result.snapshot;
+      } catch (error) {
+        this.addLedgerEntry(
+          "Remote draft append failed",
+          `Falling back to a local draft for ${input.to || "unspecified recipient"} because the server draft store failed: ${String(error)}`,
+          "notice"
+        );
+      }
+    }
+
     const draftsFolderId = draftsFolderRecord.id;
-    const relatedThread = this.findExistingThreadBySubject(input.accountId, subject);
-    const threadId = relatedThread?.id ?? makeId("thread");
+    const relatedThread =
+      this.findThreadIdForMessage(input.replyToMessageId) ??
+      this.findExistingThreadBySubject(input.accountId, subject);
+    const threadId = relatedThread?.threadId ?? makeId("thread");
 
     if (relatedThread) {
       this.database
@@ -1654,38 +1777,6 @@ export class MailService {
         "info",
         createdAt
       );
-
-    try {
-      const accountWithPassword = this.requireAuthenticatedAccount(input.accountId);
-      if (draftsFolderRecord.source === "remote" && draftsFolderRecord.name) {
-        void appendImapDraftMessage({
-          username: accountWithPassword.username,
-          password: accountWithPassword.password,
-          incomingServer: accountWithPassword.incomingServer,
-          incomingPort: accountWithPassword.incomingPort,
-          incomingSecurity: accountWithPassword.incomingSecurity,
-          folderName: draftsFolderRecord.name,
-          fromAddress: account.address,
-          fromName: account.name,
-          to: input.to,
-          cc: input.cc,
-          subject,
-          body,
-          htmlBody,
-          attachments: input.attachments?.map((attachment) => ({
-            filename: attachment.filename,
-            mimeType: attachment.mimeType,
-            data: attachment.data
-          })),
-          inReplyTo: this.getReplyMetadata(input.replyToMessageId).inReplyTo,
-          references: this.getReplyMetadata(input.replyToMessageId).references
-        }).catch((error) => {
-          this.addLedgerEntry("Server draft append failed", String(error), "notice");
-        });
-      }
-    } catch {
-      // Local draft persistence still succeeds even when the remote draft append path cannot run.
-    }
 
     return this.getWorkspaceSnapshot(context);
   }
@@ -1996,8 +2087,10 @@ export class MailService {
       });
 
       const createdAt = nowIso();
-      const relatedThread = this.findExistingThreadBySubject(input.accountId, subject);
-      const threadId = relatedThread?.id ?? makeId("thread");
+      const relatedThread =
+        this.findThreadIdForMessage(input.replyToMessageId) ??
+        this.findExistingThreadBySubject(input.accountId, subject);
+      const threadId = relatedThread?.threadId ?? makeId("thread");
 
       if (relatedThread) {
         this.database

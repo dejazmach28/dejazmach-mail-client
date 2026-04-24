@@ -558,7 +558,7 @@ export function SettingsPanel({
                   <div>
                     <dt>Source</dt>
                     <dd>
-                      <a className="settings-link" href="https://github.com/" rel="noreferrer" target="_blank">
+                      <a className="settings-link" href="https://github.com/dejazmach28/dejazmach-mail-client" rel="noreferrer" target="_blank">
                         GitHub
                       </a>
                     </dd>
@@ -570,8 +570,9 @@ export function SettingsPanel({
                 <span className="eyebrow eyebrow-inverse">Security</span>
                 <h3>Local-first & private</h3>
                 <p>
-                  All mail is stored locally in an encrypted SQLite database. No data is sent to third-party servers.
-                  HTML email content is sanitized before rendering.
+                  Mail is cached locally in SQLite and account secrets stay in the main process. HTML email content is sanitized
+                  and rendered in a restricted iframe with remote resources stripped, but DejAzmach is still not a fully hardened
+                  production security surface yet.
                 </p>
                 <dl className="settings-list">
                   <div>
@@ -580,15 +581,15 @@ export function SettingsPanel({
                   </div>
                   <div>
                     <dt>Credential storage</dt>
-                    <dd>Electron safeStorage (OS keychain)</dd>
+                    <dd>{selectedAccount?.storage ?? "Environment dependent"}</dd>
                   </div>
                   <div>
                     <dt>HTML sanitizer</dt>
-                    <dd>DOMPurify</dd>
+                    <dd>DOMPurify + restricted iframe</dd>
                   </div>
                   <div>
                     <dt>Renderer process</dt>
-                    <dd>Context-isolated, sandboxed</dd>
+                    <dd>Context-isolated Electron renderer</dd>
                   </div>
                 </dl>
               </div>

@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, MailSummary, ThreadDetail } from "../../shared/contracts.js";
 
@@ -26,21 +27,70 @@ const getInitials = (value: string) =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("") || "M";
 
-const sanitizeHtmlForFrame = (html: string): string =>
-  html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, "")
-    .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, "")
-    .replace(/<embed\b[^>]*>/gi, "")
-    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "")
-    .replace(/\son\w+\s*=\s*[^\s>]+/gi, "")
-    .replace(/javascript:/gi, "blocked:");
+const removeExternalCssUrls = (value: string) =>
+  value
+    .replace(/@import\s+url\((?!['"]?(?:data:|cid:))[^)]*\)\s*;?/gi, "")
+    .replace(/url\((?!['"]?(?:data:|cid:))[^)]*\)/gi, "none");
+
+const isSafeEmbeddedResource = (value: string) => /^(data:|cid:|blob:)/i.test(value.trim());
+
+const isSafeNavigationTarget = (value: string) =>
+  /^(https?:|mailto:|#)/i.test(value.trim());
+
+const sanitizeHtmlForFrame = (html: string): string => {
+  const sanitized = DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "button", "textarea", "select", "link"],
+    FORBID_ATTR: ["srcset"]
+  });
+  const document = new DOMParser().parseFromString(sanitized, "text/html");
+
+  for (const styleElement of Array.from(document.querySelectorAll("style"))) {
+    styleElement.textContent = removeExternalCssUrls(styleElement.textContent ?? "");
+  }
+
+  for (const element of Array.from(document.body.querySelectorAll("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      if (/^on/i.test(attribute.name)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+
+    const inlineStyle = element.getAttribute("style");
+    if (inlineStyle) {
+      element.setAttribute("style", removeExternalCssUrls(inlineStyle));
+    }
+
+    for (const attributeName of ["src", "poster", "background", "action", "formaction"]) {
+      const value = element.getAttribute(attributeName);
+      if (value && !isSafeEmbeddedResource(value)) {
+        element.removeAttribute(attributeName);
+      }
+    }
+
+    const href = element.getAttribute("href");
+    if (href) {
+      if (!isSafeNavigationTarget(href)) {
+        element.setAttribute("href", "#");
+      } else if (/^https?:/i.test(href.trim())) {
+        element.setAttribute("rel", "noreferrer noopener");
+        element.setAttribute("target", "_blank");
+      }
+    }
+  }
+
+  return document.body.innerHTML;
+};
 
 const buildHtmlDocument = (html: string) => `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src data: cid:; media-src data:; font-src data:; style-src 'unsafe-inline';"
+    />
     <base target="_blank" />
     <style>
       html, body {
@@ -114,7 +164,7 @@ function HtmlMessageFrame({ documentMarkup }: { documentMarkup: string }) {
     <iframe
       className="html-email-frame body-fade-in"
       ref={frameRef}
-      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+      sandbox="allow-popups"
       srcDoc={documentMarkup}
       style={{ height: `${frameHeight}px` }}
       title="Formatted email body"

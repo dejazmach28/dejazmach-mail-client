@@ -41,7 +41,7 @@ test("mail service starts with an empty account workspace and reference folders"
   fs.rmSync(userDataPath, { recursive: true, force: true });
 });
 
-test("mail service persists added accounts and drafts", () => {
+test("mail service persists added accounts and drafts", async () => {
   const userDataPath = createTempDir();
   const service = new MailService({ userDataPath, cipher: mockCipher });
 
@@ -71,7 +71,7 @@ test("mail service persists added accounts and drafts", () => {
   const newAccount = afterAccount.accounts.find((account) => account.address === "field@dejazmach.app");
   assert.ok(newAccount);
 
-  const afterDraft = service.createDraft(
+  const afterDraft = await service.createDraft(
     {
       accountId: newAccount.id,
       to: "ops@dejazmach.app",

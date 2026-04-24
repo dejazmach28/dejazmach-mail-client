@@ -242,6 +242,7 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNoticeTone, setActionNoticeTone] = useState<NoticeTone>("success");
   const [actionNoticeDuration, setActionNoticeDuration] = useState(5000);
   const [isBooting, setIsBooting] = useState(Boolean(window.desktopApi));
   const [isSavingAccount, setIsSavingAccount] = useState(false);
@@ -440,8 +441,9 @@ function App() {
     };
   }, [actionNotice, actionNoticeDuration]);
 
-  const showActionNotice = (message: string, duration = 5000) => {
+  const showActionNotice = (message: string, duration = 5000, tone: NoticeTone = "success") => {
     setActionNoticeDuration(duration);
+    setActionNoticeTone(tone);
     setActionNotice(message);
   };
 
@@ -755,7 +757,7 @@ function App() {
     successMessage: string
   ) => {
     if (!window.desktopApi || !selectedAccount?.id || messageIds.length === 0) {
-      return;
+      return { failed: [], succeeded: [] };
     }
 
     setActionError(null);
@@ -763,21 +765,58 @@ function App() {
 
     try {
       let nextWorkspace: WorkspaceSnapshot | null = null;
+      const failures: Array<{ id: string; error: string }> = [];
+      const succeeded: string[] = [];
       for (const messageId of Array.from(new Set(messageIds))) {
-        const result = await executor(selectedAccount.id, messageId);
-        if (result.data) {
-          nextWorkspace = result.data;
+        try {
+          const result = await executor(selectedAccount.id, messageId);
+          if (result.data) {
+            nextWorkspace = result.data;
+          }
+          unwrapResult(result);
+          succeeded.push(messageId);
+        } catch (error) {
+          failures.push({
+            id: messageId,
+            error: error instanceof Error ? error.message : "Message action failed."
+          });
         }
-        unwrapResult(result);
       }
 
       if (nextWorkspace) {
         applyWorkspace(nextWorkspace);
       }
 
-      showActionNotice(successMessage);
+      if (failures.length === 0) {
+        showActionNotice(successMessage);
+      } else if (succeeded.length > 0) {
+        showActionNotice(
+          `${succeeded.length}/${messageIds.length} messages updated. ${failures.length} failed: ${failures
+            .slice(0, 2)
+            .map((failure) => failure.error)
+            .join(" · ")}`,
+          7000,
+          "warning"
+        );
+      } else {
+        setActionError(
+          failures
+            .slice(0, 3)
+            .map((failure) => failure.error)
+            .join(" · ")
+        );
+      }
+
+      return {
+        failed: failures.map((failure) => failure.id),
+        succeeded
+      };
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message action failed.");
+      return {
+        failed: Array.from(new Set(messageIds)),
+        succeeded: []
+      };
     }
   };
 
@@ -815,6 +854,7 @@ function App() {
         throw new Error(!verifyResult.ok ? verifyResult.error : "Could not connect to the mail server. Check your credentials and server settings.");
       }
       const verifiedWorkspace = verifyResult.data;
+      const verifiedAccount = verifiedWorkspace.accounts.find((account) => account.id === createdAccount.id);
 
       // Success — apply the fully-loaded workspace.
       const nextFolderId = getFolderIdForAccount(verifiedWorkspace, createdAccount.id, "inbox");
@@ -837,7 +877,13 @@ function App() {
       createdAccountId = null; // no rollback needed
 
       const folderCount = verifiedWorkspace.folders.filter((f) => f.accountId === createdAccount.id).length;
-      showActionNotice(`${accountForm.address} connected — ${folderCount} folder${folderCount === 1 ? "" : "s"} loaded.`);
+      showActionNotice(
+        verifiedAccount?.status === "attention"
+          ? `${accountForm.address} connected for incoming mail — ${folderCount} folder${folderCount === 1 ? "" : "s"} loaded. SMTP still needs attention in Settings.`
+          : `${accountForm.address} connected — ${folderCount} folder${folderCount === 1 ? "" : "s"} loaded.`,
+        7000,
+        verifiedAccount?.status === "attention" ? "warning" : "success"
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Account setup failed.";
       setActionError(message);
@@ -896,12 +942,19 @@ function App() {
         applyWorkspace(result.data);
       }
       const nextWorkspace = unwrapResult(result);
+      const verifiedAccount = nextWorkspace.accounts.find((account) => account.id === accountId);
       const nextFolderId = getFolderIdForAccount(nextWorkspace, accountId, "inbox");
       setSelectedAccountId(accountId);
       setSelectedFolderId(nextFolderId);
       setSelectedThreadId(getFirstThreadId(nextWorkspace, accountId, nextFolderId));
       setActiveSurface("message");
-      showActionNotice("Account verification completed and server folders were refreshed.");
+      showActionNotice(
+        verifiedAccount?.status === "attention"
+          ? "Account verification refreshed folders, but SMTP still needs attention."
+          : "Account verification completed and server folders were refreshed.",
+        7000,
+        verifiedAccount?.status === "attention" ? "warning" : "success"
+      );
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Provider verification failed.");
     } finally {
@@ -1052,7 +1105,7 @@ function App() {
               <NoticeBanner message={actionError} onDismiss={() => setActionError(null)} tone="critical" />
             ) : null}
             {actionNotice ? (
-              <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone="success" />
+              <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone={actionNoticeTone} />
             ) : null}
           </article>
 
@@ -1076,7 +1129,7 @@ function App() {
                 <NoticeBanner message={actionError} onDismiss={() => setActionError(null)} tone="critical" />
               ) : null}
               {actionNotice ? (
-                <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone="success" />
+                <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone={actionNoticeTone} />
               ) : null}
             </section>
           ) : null}
@@ -1121,7 +1174,8 @@ function App() {
 
             <MessageList
               accountId={selectedAccount?.id}
-              folderName={search ? "Search results" : selectedFolder?.name ?? ""}
+              folderName={selectedFolder?.name ?? ""}
+              folderDisplayName={search ? "Search results" : selectedFolder?.name ?? ""}
               isAutoSyncing={autoSyncingFolderKey === selectedFolderKey}
               isLoadingFolder={autoSyncingFolderKey === selectedFolderKey && folderMessages.length === 0}
               messages={visibleMessages}
@@ -1169,7 +1223,7 @@ function App() {
               searchQuery={searchQuery}
               selectedFolderName={search ? "Search results" : selectedFolder?.name}
               selectedThreadId={selectedThread?.id ?? ""}
-              unreadCount={selectedAccount?.unreadCount}
+              unreadCount={search ? undefined : selectedFolder?.count}
             />
             <div
               aria-hidden="true"

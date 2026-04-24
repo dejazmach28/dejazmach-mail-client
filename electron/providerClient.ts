@@ -22,6 +22,7 @@ export type InboxHeader = {
   sequence: number;
   uid: number;
   remoteMessageRef: string;
+  inReplyTo: string;
   subject: string;
   fromName: string;
   fromAddress: string;
@@ -457,12 +458,14 @@ export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
   const ccEntries = parseEnvelopeAddressList(envelope[6]);
   const subject = decodeRfc2047(asImapString(envelope[1])) || "No subject";
   const date = asImapString(envelope[0]);
+  const inReplyTo = asImapString(envelope[8]);
   const messageId = asImapString(envelope[9]);
 
   return {
     sequence,
     uid,
     remoteMessageRef: messageId || `seq:${sequence}`,
+    inReplyTo,
     subject,
     fromName: fromEntry.name,
     fromAddress: fromEntry.address,
