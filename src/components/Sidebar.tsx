@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import type { AccountSummary, FolderSummary } from "../../shared/contracts.js";
 
 type SidebarProps = {
@@ -179,26 +178,20 @@ export function Sidebar({
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
   const customFolderItems = buildCustomFolderItems(customFolders);
 
-  useEffect(() => {
-    console.log("[sidebar] selected account:", selectedAccountId);
-    console.log(
-      "[sidebar] folders received:",
-      folders.map((folder) => ({
-        id: folder.id,
-        accountId: folder.accountId ?? null,
-        name: folder.name,
-        count: folder.count
-      }))
-    );
-  }, [folders, selectedAccountId]);
-
   return (
     <aside className="sidebar-pane">
       <div className="sidebar-brand">
-        <div className="brand-orb">D</div>
-        <div>
-          <span className="eyebrow eyebrow-inverse">Secure desktop mail</span>
-          <h1>{appName}</h1>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" className="sidebar-brand-logo" aria-hidden="true">
+          <rect x="4" y="14" width="56" height="40" rx="6" fill="#c2410c" />
+          <rect x="14" y="22" width="36" height="4" rx="2" fill="#1c1917" opacity="0.85" />
+          <rect x="18" y="30" width="28" height="20" rx="2" fill="#fef9f3" />
+          <line x1="22" y1="38" x2="42" y2="38" stroke="#c2410c" strokeWidth="1.5" strokeLinecap="round" />
+          <line x1="22" y1="42" x2="38" y2="42" stroke="#c2410c" strokeWidth="1.5" strokeLinecap="round" />
+          <line x1="22" y1="46" x2="34" y2="46" stroke="#c2410c" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+        <div className="sidebar-brand-text">
+          <span className="sidebar-brand-tagline">Secure desktop mail</span>
+          <span className="sidebar-brand-name">{appName}</span>
         </div>
       </div>
 

@@ -1,28 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect x="0" y="0" width="512" height="512" rx="102" fill="#1a1f2e" />
-  <rect
-    x="72"
-    y="141"
-    width="368"
-    height="256"
-    rx="22"
-    fill="#1e2a45"
-    stroke="#3b82f6"
-    stroke-width="8"
-  />
-  <polygon points="72,141 440,141 256,269" fill="#3b82f6" />
-  <line x1="72" y1="397" x2="186" y2="307" stroke="#3b82f6" stroke-width="5" opacity="0.5" />
-  <line x1="440" y1="397" x2="326" y2="307" stroke="#3b82f6" stroke-width="5" opacity="0.5" />
-  <text
-    x="256"
-    y="374"
-    text-anchor="middle"
-    font-size="84"
-    font-weight="700"
-    fill="#ffffff"
-    font-family="system-ui, -apple-system, sans-serif"
-    letter-spacing="6"
-  >
-    DT
-  </text>
+  <!-- App icon background (rounded square) -->
+  <rect x="0" y="0" width="512" height="512" rx="102" fill="#fef9f3" />
+  <!-- Envelope body -->
+  <rect x="32" y="112" width="448" height="320" rx="48" fill="#c2410c" />
+  <!-- Envelope header bar -->
+  <rect x="112" y="176" width="288" height="32" rx="16" fill="#1c1917" opacity="0.85" />
+  <!-- Paper sheet -->
+  <rect x="144" y="240" width="224" height="160" rx="16" fill="#fef9f3" />
+  <!-- Lines on paper -->
+  <line x1="176" y1="304" x2="336" y2="304" stroke="#c2410c" stroke-width="12" stroke-linecap="round" />
+  <line x1="176" y1="336" x2="304" y2="336" stroke="#c2410c" stroke-width="12" stroke-linecap="round" />
+  <line x1="176" y1="368" x2="272" y2="368" stroke="#c2410c" stroke-width="12" stroke-linecap="round" />
 </svg>
