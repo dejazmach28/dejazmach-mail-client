@@ -390,8 +390,8 @@ input, textarea, select {
 }
 
 .account-avatar {
-  width: 32px; height: 32px;
-  border-radius: 50%;
+  width: 28px; height: 28px;
+  border-radius: var(--r-sm);
   background: var(--accent);
   color: #fff;
   font-size: 0.6875rem;
@@ -752,77 +752,58 @@ input, textarea, select {
 
 /* Message row */
 .message-row {
-  display: grid;
-  grid-template-columns: 8px 28px 38px 1fr;
+  display: flex;
   align-items: flex-start;
   gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5) var(--sp-4) var(--sp-4);
-  min-height: 72px;
+  padding: 8px 14px 8px 12px;
   cursor: pointer;
   position: relative;
   border-bottom: 1px solid var(--divider);
+  border-left: 2px solid transparent;
   transition: background var(--dur-fast) var(--ease-enter);
   user-select: none;
 }
-.message-row:hover { background: var(--paper-hover); }
+.message-row:hover { background: var(--hover, rgba(28,25,23,.04)); }
 
 .message-row-selected {
-  background: var(--accent-tint-2);
+  background: var(--selected-bg, var(--accent-tint-2));
+  border-left-color: var(--accent);
 }
-.message-row-selected::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 2px;
-  background: var(--accent);
-  border-radius: 0 1px 1px 0;
-}
-.message-row-selected:hover { background: var(--accent-tint-2); }
+.message-row-selected:hover { background: var(--selected-bg, var(--accent-tint-2)); }
 
 .message-row-batch-selected { background: rgba(194,65,12,.06); }
 
-/* Unread dot */
-.message-edge { display: flex; align-items: flex-start; justify-content: center; padding-top: 12px; }
+/* Unread dot — thin column, vertically centered with avatar */
+.message-edge {
+  width: 6px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  align-self: center;
+  height: 28px;
+}
 
 .message-unread-dot {
   width: 6px; height: 6px;
   border-radius: var(--r-full);
   background: var(--accent);
   display: block;
-}
-
-/* Select toggle — invisible until hover or active */
-.message-select-toggle {
-  width: 18px; height: 18px;
-  border-radius: var(--r-xs);
-  border: 1.5px solid transparent;
-  background: transparent;
-  font-size: 0.625rem;
-  font-weight: 700;
-  color: var(--accent);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  transition: border-color var(--dur-fast), background var(--dur-fast);
   flex-shrink: 0;
-  margin-top: 9px;
 }
-.message-row:hover .message-select-toggle {
-  border-color: var(--line-strong);
-  background: var(--surface);
-}
-.message-select-toggle-active {
-  border-color: var(--accent) !important;
-  background: var(--accent-tint-2) !important;
-}
-.message-select-toggle:hover { border-color: var(--accent) !important; }
 
-/* Avatar — circles */
+/* Select toggle — hidden by default, shown on hover */
+.message-select-toggle {
+  display: none;
+}
+
+/* Avatar — rounded square (matches reference design) */
 .message-avatar {
-  width: 36px; height: 36px;
-  border-radius: 50%;
+  width: 28px; height: 28px;
+  border-radius: var(--r-sm);
   background: var(--accent);
   color: #fff;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
@@ -835,6 +816,7 @@ input, textarea, select {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .message-line {
@@ -1033,7 +1015,7 @@ input, textarea, select {
 
 /* Reader title section (below toolbar) */
 .reader-header {
-  padding: var(--sp-6) var(--sp-9) var(--sp-5);
+  padding: var(--sp-6) 36px var(--sp-5);
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   flex-shrink: 0;
@@ -1046,12 +1028,13 @@ input, textarea, select {
   flex-shrink: 0;
 }
 
-.reader-title h2 {
+.reader-title h2,
+.reader-header h2 {
   font-family: var(--font-serif);
-  font-size: 1.375rem;
+  font-size: 2rem;
   font-weight: 600;
   color: var(--ink);
-  line-height: 1.3;
+  line-height: 1.15;
   letter-spacing: -0.01em;
   margin-top: var(--sp-2);
 }
@@ -1097,7 +1080,7 @@ input, textarea, select {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--sp-7) var(--sp-9) var(--sp-9);
+  padding: var(--sp-8) 36px var(--sp-9);
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
@@ -1124,10 +1107,10 @@ input, textarea, select {
 }
 
 .thread-avatar {
-  width: 38px !important;
-  height: 38px !important;
-  font-size: 0.8125rem !important;
-  border-radius: 50% !important;
+  width: 32px !important;
+  height: 32px !important;
+  font-size: 0.75rem !important;
+  border-radius: var(--r-sm) !important;
   flex-shrink: 0;
 }
 
@@ -1176,12 +1159,12 @@ input, textarea, select {
   font-variant-numeric: tabular-nums;
 }
 
-/* Reading body — Source Serif 4 */
+/* Reading body — Source Serif 4 (indented past avatar via .thread-body override below) */
 .thread-body {
   font-family: var(--font-serif);
-  font-size: 1rem;
-  line-height: 1.7;
-  color: var(--ink-2);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
@@ -1329,6 +1312,17 @@ input, textarea, select {
 }
 .attachment-download:hover { background: var(--paper-hover); color: var(--ink); }
 
+/* Thread message body — indented to align with text (past avatar) */
+.thread-body {
+  padding-left: 44px;
+}
+.html-email-frame,
+.html-choice-banner,
+.thread-warning,
+.thread-loading-shell {
+  margin-left: 44px;
+}
+
 /* Thread inline reply row */
 .thread-inline-reply {
   display: flex;
@@ -1337,6 +1331,96 @@ input, textarea, select {
   margin-top: var(--sp-6);
   padding-top: var(--sp-5);
   border-top: 1px solid var(--divider);
+}
+
+/* Reply box at bottom of thread (reference-style clickable placeholder) */
+.thread-reply-box {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 14px 16px;
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--paper);
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+.thread-reply-box:hover { background: var(--paper-hover); }
+.thread-reply-box-text {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+.thread-reply-box-kbd {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--ink-muted);
+}
+
+/* Message row label chips */
+.message-row-labels {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: 5px;
+  flex-wrap: wrap;
+}
+
+.message-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  background: var(--accent-tint-2);
+  color: var(--accent-text, #9a3412);
+}
+
+.message-label-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Message list header tabs */
+.message-list-tabs {
+  display: flex;
+  gap: 14px;
+  padding: 10px 14px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  flex-shrink: 0;
+}
+
+.message-list-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-bottom: 8px;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: color var(--dur-fast), border-color var(--dur-fast);
+}
+.message-list-tab:hover { color: var(--ink); }
+.message-list-tab-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.message-list-tab-count {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--ink-muted);
 }
 
 /* Btn-action variants */

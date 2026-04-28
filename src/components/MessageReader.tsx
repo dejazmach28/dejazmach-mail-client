@@ -352,7 +352,7 @@ export function MessageReader({
       </header>
 
       <div className="thread-stream" ref={streamRef}>
-        {thread.messages.map((message, index) => (
+        {thread.messages.map((message) => (
           <article className="thread-message" key={message.id}>
             <div className="thread-topline">
               <div className="thread-person">
@@ -457,21 +457,23 @@ export function MessageReader({
               </section>
             ) : null}
 
-            {index === thread.messages.length - 1 ? (
-              <div className="thread-inline-reply">
-                <button className="btn-action btn-action-reply" onClick={onReply} type="button">
-                  ↩ Reply
-                </button>
-                <button className="btn-action" onClick={onReplyAll} type="button">
-                  ↺ Reply all
-                </button>
-                <button className="btn-action" onClick={onForward} type="button">
-                  ↪ Forward
-                </button>
-              </div>
-            ) : null}
           </article>
         ))}
+
+        {/* Reply box inside scroll area — matches reference design */}
+        <div
+          className="thread-reply-box"
+          onClick={onReply}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter") onReply(); }}
+          aria-label="Click to reply"
+        >
+          <span className="thread-reply-box-text">
+            Reply to {thread.participants[0]?.split(" ")[0] ?? "sender"}…
+          </span>
+          <span className="thread-reply-box-kbd">R</span>
+        </div>
       </div>
 
       {/* Footer kept in DOM but hidden via CSS (actions moved to toolbar) */}

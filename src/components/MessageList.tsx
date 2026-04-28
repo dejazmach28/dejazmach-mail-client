@@ -92,7 +92,6 @@ type MessageRowProps = {
   threadCount: number;
   onContextMenu: (event: MouseEvent<HTMLDivElement>, message: MailSummary) => void;
   onOpen: (event: MouseEvent<HTMLDivElement>, message: MailSummary) => void;
-  onToggleSelection: (messageId: string) => void;
 };
 
 function MessageRow({
@@ -101,8 +100,7 @@ function MessageRow({
   message,
   threadCount,
   onContextMenu,
-  onOpen,
-  onToggleSelection
+  onOpen
 }: MessageRowProps) {
   const rowClassName = [
     "message-row",
@@ -127,20 +125,9 @@ function MessageRow({
       role="button"
       tabIndex={0}
     >
-      <span className="message-edge">
+      <div className="message-edge">
         {message.unread ? <span className="message-unread-dot" aria-hidden="true" /> : null}
-      </span>
-      <button
-        aria-label={isBatchSelected ? "Deselect message" : "Select message"}
-        className={isBatchSelected ? "message-select-toggle message-select-toggle-active" : "message-select-toggle"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleSelection(message.id);
-        }}
-        type="button"
-      >
-        {isBatchSelected ? "✓" : ""}
-      </button>
+      </div>
       <span
         className="message-avatar"
         style={{ background: getAvatarColor(message.sender) }}
@@ -150,16 +137,16 @@ function MessageRow({
       <span className="message-copy">
         <span className="message-line">
           <strong className="message-sender">{message.sender}</strong>
+          {message.flagged ? <span className="message-flagged" aria-label="Flagged message" style={{ fontSize: "0.75rem" }}>★</span> : null}
           <span className="message-time">{formatMessageTime(message.time)}</span>
         </span>
         <span className="message-subject">
-          {message.flagged ? <span className="message-flagged" aria-label="Flagged message">★</span> : null}
           <span className="message-subject-text">{message.subject}</span>
           {threadCount > 1 ? (
             <span className="thread-count-badge" aria-label={`${threadCount} messages in thread`}>{threadCount}</span>
           ) : null}
         </span>
-        <span className="message-preview">{message.preview || "No preview available."}</span>
+        <span className="message-preview">{message.preview || ""}</span>
       </span>
     </div>
   );
@@ -170,8 +157,7 @@ function SkeletonRow({ index }: { index: number }) {
   const previewWidths = ["45%", "65%", "50%", "70%", "55%"];
   return (
     <div className="message-row message-row-skeleton" aria-hidden="true">
-      <span className="message-edge" />
-      <span className="message-select-toggle" />
+      <div className="message-edge" />
       <span className="message-avatar skeleton-avatar" />
       <span className="message-copy">
         <span className="message-line">
@@ -207,7 +193,7 @@ export function MessageList({
   onShowSidebar
 }: MessageListProps) {
   const [isSyncing, setIsSyncing] = useState(false);
-  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  const [sortOrder] = useState<SortOrder>("newest");
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const [contextSelection, setContextSelection] = useState<ContextSelection>(null);
 
@@ -371,6 +357,21 @@ export function MessageList({
         </button>
       </header>
 
+      <div className="message-list-tabs">
+        <button className="message-list-tab message-list-tab-active" type="button">
+          All
+          {typeof unreadCount === "number" ? (
+            <span className="message-list-tab-count">{messages.length}</span>
+          ) : null}
+        </button>
+        <button className="message-list-tab" type="button">
+          Unread
+          {typeof unreadCount === "number" && unreadCount > 0 ? (
+            <span className="message-list-tab-count">{unreadCount}</span>
+          ) : null}
+        </button>
+      </div>
+
       <div className="search-shell">
         <span className="search-icon" aria-hidden="true">⌕</span>
         <input
@@ -386,34 +387,6 @@ export function MessageList({
         ) : null}
       </div>
 
-      {!isLoadingFolder && messages.length > 0 ? (
-        <div className="message-pane-meta">
-          <span>{messages.length} {messages.length === 1 ? "message" : "messages"}</span>
-          <div className="message-pane-meta-actions">
-            {selectedMessageIds.length > 0 ? (
-              <button
-                className="message-selection-chip"
-                onClick={() => setSelectedMessageIds([])}
-                type="button"
-              >
-                {selectedMessageIds.length} selected · Clear
-              </button>
-            ) : null}
-            <div className="sort-control">
-              <select
-                aria-label="Sort order"
-                className="sort-select"
-                onChange={(event) => setSortOrder(event.target.value as SortOrder)}
-                value={sortOrder}
-              >
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="unread">Unread first</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <div className="message-list" role="list">
         {isLoadingFolder ? (
@@ -430,7 +403,6 @@ export function MessageList({
                   message={message}
                   onContextMenu={handleRowContextMenu}
                   onOpen={handleRowOpen}
-                  onToggleSelection={toggleSelectedMessage}
                   threadCount={threadCounts[message.threadId] ?? 1}
                 />
               ))}
