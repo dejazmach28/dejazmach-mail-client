@@ -1,4 +1,5 @@
 import type { AccountSummary, FolderSummary } from "../../shared/contracts.js";
+import { getAvatarColor } from "../utils/avatarColor.js";
 
 type SidebarProps = {
   appName: string;
@@ -196,19 +197,12 @@ export function Sidebar({
       </div>
 
       <button className="compose-button" onClick={() => { onCompose(); onCloseSidebar?.(); }} type="button">
-        New message
+        <span>Compose</span>
+        <span className="compose-shortcut-badge">C</span>
       </button>
 
       <section className="sidebar-section">
-        <div
-          className="sidebar-section-header sidebar-section-header-static"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          <span className="eyebrow eyebrow-inverse">Accounts</span>
-        </div>
+        <span className="sidebar-section-label">Accounts</span>
 
         <div className="account-stack">
           {accounts.map((account) => (
@@ -223,7 +217,7 @@ export function Sidebar({
               }}
               type="button"
             >
-              <span className="account-avatar">{getInitials(account.name)}</span>
+              <span className="account-avatar" style={{ background: getAvatarColor(account.name) }}>{getInitials(account.name)}</span>
               <span className="account-copy">
                 <strong>
                   {account.name}
@@ -250,15 +244,7 @@ export function Sidebar({
       <section className="sidebar-section sidebar-section-grow">
         {folders.length > 0 ? (
           <>
-            <div
-              className="sidebar-section-header sidebar-section-header-static"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              <span className="eyebrow eyebrow-inverse">Folders</span>
-            </div>
+            <span className="sidebar-section-label">Inboxes</span>
             <div className="folder-stack">
               {systemFolders.map((folder) => (
                 <button

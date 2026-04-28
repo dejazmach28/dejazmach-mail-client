@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, MailSummary, ThreadDetail } from "../../shared/contracts.js";
+import { getAvatarColor } from "../utils/avatarColor.js";
 
 type MessageReaderProps = {
   thread?: ThreadDetail;
@@ -55,19 +56,16 @@ const sanitizeHtmlForFrame = (html: string): string => {
         element.removeAttribute(attribute.name);
       }
     }
-
     const inlineStyle = element.getAttribute("style");
     if (inlineStyle) {
       element.setAttribute("style", removeExternalCssUrls(inlineStyle));
     }
-
     for (const attributeName of ["src", "poster", "background", "action", "formaction"]) {
       const value = element.getAttribute(attributeName);
       if (value && !isSafeEmbeddedResource(value)) {
         element.removeAttribute(attributeName);
       }
     }
-
     const href = element.getAttribute("href");
     if (href) {
       if (!isSafeNavigationTarget(href)) {
@@ -101,19 +99,10 @@ const buildHtmlDocument = (html: string) => `<!doctype html>
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         line-height: 1.6;
       }
-      body {
-        padding: 0;
-        overflow-wrap: anywhere;
-      }
-      img, table {
-        max-width: 100%;
-      }
-      pre {
-        white-space: pre-wrap;
-      }
-      a {
-        color: #2563eb;
-      }
+      body { padding: 0; overflow-wrap: anywhere; }
+      img, table { max-width: 100%; }
+      pre { white-space: pre-wrap; }
+      a { color: #2563eb; }
     </style>
   </head>
   <body>${sanitizeHtmlForFrame(html)}</body>
@@ -125,39 +114,27 @@ function HtmlMessageFrame({ documentMarkup }: { documentMarkup: string }) {
 
   useEffect(() => {
     const frame = frameRef.current;
-    if (!frame) {
-      return;
-    }
+    if (!frame) return;
 
     const syncHeight = () => {
       try {
         const doc = frame.contentDocument;
-        if (!doc) {
-          return;
-        }
-
+        if (!doc) return;
         const nextHeight = Math.max(
           doc.documentElement?.scrollHeight ?? 0,
           doc.body?.scrollHeight ?? 0,
           360
         );
-
         setFrameHeight(Math.min(nextHeight + 8, 2200));
       } catch {
         setFrameHeight(640);
       }
     };
 
-    const handleLoad = () => {
-      window.setTimeout(syncHeight, 20);
-    };
-
+    const handleLoad = () => { window.setTimeout(syncHeight, 20); };
     frame.addEventListener("load", handleLoad);
     handleLoad();
-
-    return () => {
-      frame.removeEventListener("load", handleLoad);
-    };
+    return () => { frame.removeEventListener("load", handleLoad); };
   }, [documentMarkup]);
 
   return (
@@ -173,9 +150,7 @@ function HtmlMessageFrame({ documentMarkup }: { documentMarkup: string }) {
 }
 
 const formatAttachmentSize = (size: number) => {
-  if (size >= 1024 * 1024) {
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  }
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(size / 1024))} KB`;
 };
 
@@ -212,7 +187,6 @@ export function MessageReader({
   const moveMenuRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
 
-  // Close menus when clicking outside
   useEffect(() => {
     if (!moreMenuOpen && !moveMenuOpen) return;
     const handler = (e: MouseEvent) => {
@@ -227,7 +201,6 @@ export function MessageReader({
     return () => document.removeEventListener("mousedown", handler);
   }, [moreMenuOpen, moveMenuOpen]);
 
-  // Scroll to top when thread changes
   useEffect(() => {
     if (streamRef.current) {
       streamRef.current.scrollTop = 0;
@@ -242,7 +215,6 @@ export function MessageReader({
     }, 120);
   };
 
-  // Must be before any early return to satisfy the rules of hooks.
   const readerHtmlChoices = useMemo(
     () =>
       (thread?.messages ?? []).reduce<Record<string, string>>((accumulator, message) => {
@@ -278,28 +250,62 @@ export function MessageReader({
 
   return (
     <article className="reader-card">
-      <header className="reader-header">
-        {onBack ? (
-          <button
-            aria-label="Back to message list"
-            className="reader-back-button"
-            onClick={onBack}
-            type="button"
-          >
-            ← Back
+      {/* Top toolbar — all actions here */}
+      <div className="reader-toolbar">
+        <div className="reader-toolbar-group">
+          {onBack ? (
+            <button
+              aria-label="Back to message list"
+              className="reader-toolbar-btn"
+              onClick={onBack}
+              type="button"
+            >
+              ← Back
+            </button>
+          ) : null}
+          <button className="reader-toolbar-btn" onClick={onArchive} title="Archive" type="button">
+            Archive
           </button>
-        ) : null}
-        <div className="reader-title">
-          <span className="eyebrow">Conversation · {thread.messages.length} {thread.messages.length === 1 ? "message" : "messages"}</span>
-          <h2>{thread.subject}</h2>
-          <p className="reader-participants">{thread.participants.join(", ")}</p>
+          <button className="reader-toolbar-btn" onClick={onDelete} title="Delete" type="button">
+            Delete
+          </button>
+          <div className="reader-toolbar-sep" />
+          <div className="more-menu-shell" ref={moveMenuRef}>
+            <button className="reader-toolbar-btn" onClick={() => setMoveMenuOpen((v) => !v)} type="button">
+              Move ▾
+            </button>
+            {moveMenuOpen ? (
+              <div className="more-menu" role="menu">
+                {folders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => { setMoveMenuOpen(false); onMove(folder.name); }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    {folder.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
 
-        <div className="reader-actions">
+        <div className="reader-toolbar-group">
+          <button className="reader-toolbar-btn reader-toolbar-btn-primary" onClick={onReply} type="button">
+            ↩ Reply
+          </button>
+          <button className="reader-toolbar-btn" onClick={onReplyAll} type="button">
+            ↺ All
+          </button>
+          <button className="reader-toolbar-btn" onClick={onForward} type="button">
+            ↪ Forward
+          </button>
+          <div className="reader-toolbar-sep" />
           {readerMessage ? (
             <button
               aria-label={readerMessage.flagged ? "Unstar message" : "Star message"}
-              className="btn-icon"
+              className="reader-toolbar-btn"
               onClick={() => onToggleFlag(!readerMessage.flagged)}
               title={readerMessage.flagged ? "Remove star" : "Star this message"}
               type="button"
@@ -312,8 +318,8 @@ export function MessageReader({
           <div className="more-menu-shell" ref={moreMenuRef}>
             <button
               aria-label="More actions"
-              className="btn-icon"
-              onClick={() => setMoreMenuOpen((current) => !current)}
+              className="reader-toolbar-btn"
+              onClick={() => setMoreMenuOpen((v) => !v)}
               type="button"
             >
               ⋯
@@ -334,6 +340,15 @@ export function MessageReader({
             ) : null}
           </div>
         </div>
+      </div>
+
+      {/* Subject + participants */}
+      <header className="reader-header">
+        <span className="reader-eyebrow">
+          {thread.messages.length} {thread.messages.length === 1 ? "message" : "messages"}
+        </span>
+        <h2>{thread.subject}</h2>
+        <p className="reader-participants">{thread.participants.join(", ")}</p>
       </header>
 
       <div className="thread-stream" ref={streamRef}>
@@ -341,7 +356,12 @@ export function MessageReader({
           <article className="thread-message" key={message.id}>
             <div className="thread-topline">
               <div className="thread-person">
-                <span className="message-avatar thread-avatar">{getInitials(message.sender)}</span>
+                <span
+                  className="message-avatar thread-avatar"
+                  style={{ background: getAvatarColor(message.sender) }}
+                >
+                  {getInitials(message.sender)}
+                </span>
                 <div className="thread-sender-info">
                   <strong className="thread-sender-name">{message.sender}</strong>
                   <span className="thread-sender-addr">{message.address}</span>
@@ -437,7 +457,6 @@ export function MessageReader({
               </section>
             ) : null}
 
-            {/* Show Reply/Forward inline after last message */}
             {index === thread.messages.length - 1 ? (
               <div className="thread-inline-reply">
                 <button className="btn-action btn-action-reply" onClick={onReply} type="button">
@@ -455,35 +474,8 @@ export function MessageReader({
         ))}
       </div>
 
-      <footer className="reader-footer">
-        <div className="reader-footer-left">
-          <button className="btn-action btn-action-archive" onClick={onArchive} title="Archive" type="button">
-            Archive
-          </button>
-          <div className="more-menu-shell" ref={moveMenuRef}>
-            <button className="btn-action" onClick={() => setMoveMenuOpen((current) => !current)} type="button">
-              Move ▾
-            </button>
-            {moveMenuOpen ? (
-              <div className="more-menu more-menu-up" role="menu">
-                {folders.map((folder) => (
-                  <button
-                    key={folder.id}
-                    onClick={() => { setMoveMenuOpen(false); onMove(folder.name); }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {folder.name}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </div>
-        <button className="btn-action btn-action-danger" onClick={onDelete} title="Delete message" type="button">
-          Delete
-        </button>
-      </footer>
+      {/* Footer kept in DOM but hidden via CSS (actions moved to toolbar) */}
+      <footer className="reader-footer" />
     </article>
   );
 }

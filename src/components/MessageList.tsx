@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import type { MailSummary, WorkspaceSnapshot } from "../../shared/contracts.js";
+import { getAvatarColor } from "../utils/avatarColor.js";
 
 type SortOrder = "newest" | "oldest" | "unread";
 
@@ -46,34 +47,42 @@ const getInitials = (value: string) =>
 
 const formatMessageTime = (raw: string): string => {
   if (!raw) return "";
-
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return raw;
-
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterday = new Date(today.getTime() - 86_400_000);
   const msgDay = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
-
   if (msgDay.getTime() === today.getTime()) {
     return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
-
-  if (msgDay.getTime() === yesterday.getTime()) {
-    return "Yesterday";
-  }
-
+  if (msgDay.getTime() === yesterday.getTime()) return "Yesterday";
   const sevenDaysAgo = new Date(today.getTime() - 6 * 86_400_000);
   if (msgDay >= sevenDaysAgo) {
     return parsed.toLocaleDateString([], { weekday: "short" });
   }
-
   const currentYear = now.getFullYear();
   if (parsed.getFullYear() === currentYear) {
     return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
   }
-
   return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" });
+};
+
+const getDateBucket = (raw: string | undefined): string => {
+  if (!raw) return "";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  const msgDay = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  if (msgDay.getTime() === today.getTime()) return "Today";
+  if (msgDay.getTime() === yesterday.getTime()) return "Yesterday";
+  const sevenDaysAgo = new Date(today.getTime() - 6 * 86_400_000);
+  if (msgDay >= sevenDaysAgo) {
+    return parsed.toLocaleDateString([], { weekday: "long" });
+  }
+  return parsed.toLocaleDateString([], { month: "long", day: "numeric" });
 };
 
 type MessageRowProps = {
@@ -132,7 +141,12 @@ function MessageRow({
       >
         {isBatchSelected ? "✓" : ""}
       </button>
-      <span className="message-avatar">{getInitials(message.sender)}</span>
+      <span
+        className="message-avatar"
+        style={{ background: getAvatarColor(message.sender) }}
+      >
+        {getInitials(message.sender)}
+      </span>
       <span className="message-copy">
         <span className="message-line">
           <strong className="message-sender">{message.sender}</strong>
@@ -202,14 +216,10 @@ export function MessageList({
   }, [messages]);
 
   useEffect(() => {
-    if (!contextSelection) {
-      return;
-    }
-
+    if (!contextSelection) return;
     const closeMenu = () => setContextSelection(null);
     window.addEventListener("click", closeMenu);
     window.addEventListener("blur", closeMenu);
-
     return () => {
       window.removeEventListener("click", closeMenu);
       window.removeEventListener("blur", closeMenu);
@@ -251,18 +261,27 @@ export function MessageList({
     return copy;
   }, [messages, sortOrder]);
 
+  const groupedMessages = useMemo(() => {
+    const groups: Array<{ bucket: string; messages: MailSummary[] }> = [];
+    for (const message of sortedMessages) {
+      const bucket = getDateBucket(message.sentAt);
+      const last = groups[groups.length - 1];
+      if (last && last.bucket === bucket) {
+        last.messages.push(message);
+      } else {
+        groups.push({ bucket, messages: [message] });
+      }
+    }
+    return groups;
+  }, [sortedMessages]);
+
   const handleSync = async () => {
     if (!window.desktopApi) {
       onSyncError("Folder sync requires the Electron desktop shell.");
       return;
     }
-
-    if (!accountId || !folderName) {
-      return;
-    }
-
+    if (!accountId || !folderName) return;
     setIsSyncing(true);
-
     try {
       const result = await window.desktopApi.syncFolder({ accountId, folderName });
       if (result.data) {
@@ -289,12 +308,10 @@ export function MessageList({
       toggleSelectedMessage(message.id);
       return;
     }
-
     if (selectedMessageIds.length > 0 && !selectedMessageIds.includes(message.id)) {
       setSelectedMessageIds([message.id]);
       return;
     }
-
     setSelectedMessageIds([]);
     onOpenMessage(message.id, message.threadId, message.accountId);
   };
@@ -311,10 +328,7 @@ export function MessageList({
   };
 
   const runSelectionAction = async (handler: (messageIds: string[]) => Promise<BatchActionOutcome>) => {
-    if (!contextSelection) {
-      return;
-    }
-
+    if (!contextSelection) return;
     const nextIds = contextSelection.messageIds;
     setContextSelection(null);
     const outcome = await handler(nextIds);
@@ -347,9 +361,7 @@ export function MessageList({
           aria-label={`Refresh ${folderDisplayName || folderName}`}
           className={syncing ? "refresh-button refresh-button-spinning" : "refresh-button"}
           disabled={syncing || !accountId || !folderName || folderDisplayName === "Search results"}
-          onClick={() => {
-            void handleSync();
-          }}
+          onClick={() => { void handleSync(); }}
           title="Sync folder"
           type="button"
         >
@@ -407,17 +419,22 @@ export function MessageList({
         {isLoadingFolder ? (
           Array.from({ length: 7 }, (_, index) => <SkeletonRow index={index} key={index} />)
         ) : sortedMessages.length > 0 ? (
-          sortedMessages.map((message) => (
-            <MessageRow
-              isBatchSelected={selectedMessageIds.includes(message.id)}
-              isSelected={message.threadId === selectedThreadId}
-              key={message.id}
-              message={message}
-              onContextMenu={handleRowContextMenu}
-              onOpen={handleRowOpen}
-              onToggleSelection={toggleSelectedMessage}
-              threadCount={threadCounts[message.threadId] ?? 1}
-            />
+          groupedMessages.map(({ bucket, messages: groupMsgs }) => (
+            <div key={bucket} role="group" aria-label={bucket}>
+              {bucket ? <div className="message-group-header" aria-hidden="true">{bucket}</div> : null}
+              {groupMsgs.map((message) => (
+                <MessageRow
+                  isBatchSelected={selectedMessageIds.includes(message.id)}
+                  isSelected={message.threadId === selectedThreadId}
+                  key={message.id}
+                  message={message}
+                  onContextMenu={handleRowContextMenu}
+                  onOpen={handleRowOpen}
+                  onToggleSelection={toggleSelectedMessage}
+                  threadCount={threadCounts[message.threadId] ?? 1}
+                />
+              ))}
+            </div>
           ))
         ) : (
           <div className="empty-panel">
