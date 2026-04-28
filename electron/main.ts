@@ -732,6 +732,42 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle("app:search-messages", async (_event, input) => {
+    try {
+      return {
+        ok: true as const,
+        data: requireMailService().searchMessages(input.accountId, input.query)
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: []
+      };
+    }
+  });
+
+  ipcMain.handle("app:batch-messages", async (_event, input) => {
+    try {
+      const result = await requireMailService().batchMutateMessages(input, createWorkspaceContext());
+      pushWorkspaceSnapshot(result.snapshot);
+      return {
+        ok: true as const,
+        data: result
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: getErrorMessage(error),
+        data: {
+          snapshot: requireMailService().getWorkspaceSnapshot(createWorkspaceContext()),
+          succeededIds: [],
+          failures: []
+        }
+      };
+    }
+  });
+
   ipcMain.handle("app:delete-message", async (_event, input) => {
     try {
       return {

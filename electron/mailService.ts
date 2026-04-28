@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -78,6 +79,8 @@ type MessageRow = {
   cc_text?: string | null;
   content_mode: MessageContentMode;
   remote_message_ref?: string | null;
+  in_reply_to?: string | null;
+  references_json?: string | null;
   remote_uid?: number | null;
   remote_sequence?: number | null;
   remote_folder_name?: string | null;
@@ -109,13 +112,12 @@ const displayTime = () =>
     hour12: false
   }).format(new Date());
 
-const FALLBACK_SECRET_PREFIX = "plain:";
+const LEGACY_FALLBACK_SECRET_PREFIX = "plain:";
+const ENCRYPTED_FALLBACK_SECRET_PREFIX = "fallback:v2:";
+const FALLBACK_SECRET_KEY_BYTES = 32;
 
 const makeId = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-const serializeFallbackSecret = (password: string) =>
-  Buffer.from(`${FALLBACK_SECRET_PREFIX}${JSON.stringify({ password })}`, "utf8");
 
 const textPreview = (value: string) =>
   value
@@ -289,6 +291,8 @@ export class MailService {
         verified INTEGER NOT NULL,
         content_mode TEXT NOT NULL DEFAULT 'plain',
         remote_message_ref TEXT,
+        in_reply_to TEXT,
+        references_json TEXT,
         remote_uid INTEGER,
         remote_sequence INTEGER,
         remote_folder_name TEXT,
@@ -410,6 +414,14 @@ export class MailService {
 
     if (!columns.has("remote_message_ref")) {
       this.database.exec("ALTER TABLE messages ADD COLUMN remote_message_ref TEXT;");
+    }
+
+    if (!columns.has("in_reply_to")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN in_reply_to TEXT;");
+    }
+
+    if (!columns.has("references_json")) {
+      this.database.exec("ALTER TABLE messages ADD COLUMN references_json TEXT;");
     }
 
     if (!columns.has("remote_uid")) {
@@ -967,6 +979,63 @@ export class MailService {
       | undefined;
   }
 
+  private getFallbackSecretKeyPath() {
+    return path.join(this.input.userDataPath, "credential-fallback.key");
+  }
+
+  private readOrCreateFallbackSecretKey() {
+    const keyPath = this.getFallbackSecretKeyPath();
+
+    try {
+      const existingKey = fs.readFileSync(keyPath);
+      if (existingKey.byteLength === FALLBACK_SECRET_KEY_BYTES) {
+        return existingKey;
+      }
+    } catch {
+      // Generate a fresh key below.
+    }
+
+    const nextKey = crypto.randomBytes(FALLBACK_SECRET_KEY_BYTES);
+    fs.writeFileSync(keyPath, nextKey, { mode: 0o600 });
+    return nextKey;
+  }
+
+  private encryptFallbackSecret(password: string) {
+    const key = this.readOrCreateFallbackSecretKey();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const payload = Buffer.from(JSON.stringify({ password }), "utf8");
+    const encrypted = Buffer.concat([cipher.update(payload), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    return Buffer.from(
+      `${ENCRYPTED_FALLBACK_SECRET_PREFIX}${Buffer.concat([iv, authTag, encrypted]).toString("base64")}`,
+      "utf8"
+    );
+  }
+
+  private decryptFallbackSecret(value: Buffer) {
+    const rawSecret = value.toString("utf8");
+
+    if (rawSecret.startsWith(LEGACY_FALLBACK_SECRET_PREFIX)) {
+      return JSON.parse(rawSecret.slice(LEGACY_FALLBACK_SECRET_PREFIX.length)) as { password?: string };
+    }
+
+    if (!rawSecret.startsWith(ENCRYPTED_FALLBACK_SECRET_PREFIX)) {
+      return null;
+    }
+
+    const payload = Buffer.from(rawSecret.slice(ENCRYPTED_FALLBACK_SECRET_PREFIX.length), "base64");
+    const iv = payload.subarray(0, 12);
+    const authTag = payload.subarray(12, 28);
+    const encrypted = payload.subarray(28);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", this.readOrCreateFallbackSecretKey(), iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+
+    return JSON.parse(decrypted.toString("utf8")) as { password?: string };
+  }
+
   private getAccountPassword(accountId: string) {
     const record = this.getAccountRecord(accountId);
 
@@ -988,8 +1057,16 @@ export class MailService {
       ? record.encryptedSecret
       : Buffer.from(record.encryptedSecret);
     const rawSecret = storedSecretBuffer.toString("utf8");
-    if (rawSecret.startsWith(FALLBACK_SECRET_PREFIX)) {
-      secretPayload = JSON.parse(rawSecret.slice(FALLBACK_SECRET_PREFIX.length)) as { password?: string };
+    if (
+      rawSecret.startsWith(LEGACY_FALLBACK_SECRET_PREFIX) ||
+      rawSecret.startsWith(ENCRYPTED_FALLBACK_SECRET_PREFIX)
+    ) {
+      secretPayload = this.decryptFallbackSecret(storedSecretBuffer);
+      if (secretPayload?.password && rawSecret.startsWith(LEGACY_FALLBACK_SECRET_PREFIX)) {
+        this.database
+          .prepare("UPDATE account_secrets SET encrypted_secret = ? WHERE account_id = ?")
+          .run(this.encryptFallbackSecret(secretPayload.password), accountId);
+      }
     } else {
       if (!this.input.cipher.isAvailable()) {
         throw new Error("The operating system vault is unavailable, so this account password cannot be unlocked in this environment.");
@@ -1010,7 +1087,7 @@ export class MailService {
       secretPayload = JSON.parse(decryptedSecret) as { password?: string };
     }
 
-    if (!secretPayload.password) {
+    if (!secretPayload?.password) {
       throw new Error("Stored account secret is invalid.");
     }
 
@@ -1048,7 +1125,7 @@ export class MailService {
     const vaultAvailable = this.input.cipher.isAvailable();
     const encryptedSecret = vaultAvailable
       ? this.input.cipher.encryptString(JSON.stringify({ password }))
-      : serializeFallbackSecret(password);
+      : this.encryptFallbackSecret(password);
     this.database
       .prepare(
         `
@@ -1087,22 +1164,33 @@ export class MailService {
     const message = this.database
       .prepare(
         `
-          SELECT remote_message_ref AS remoteMessageRef
+          SELECT
+            remote_message_ref AS remoteMessageRef,
+            in_reply_to AS inReplyTo,
+            references_json AS referencesJson
           FROM messages
           WHERE id = ?
           LIMIT 1
         `
       )
-      .get(messageId) as { remoteMessageRef?: string | null } | undefined;
+      .get(messageId) as
+      | {
+          remoteMessageRef?: string | null;
+          inReplyTo?: string | null;
+          referencesJson?: string | null;
+        }
+      | undefined;
 
     const inReplyTo =
       message?.remoteMessageRef && !message.remoteMessageRef.startsWith("seq:")
         ? message.remoteMessageRef
-        : undefined;
+        : (message?.inReplyTo ?? undefined);
+    const storedReferences = message?.referencesJson ? (JSON.parse(message.referencesJson) as string[]) : [];
+    const references = Array.from(new Set([...storedReferences, ...(inReplyTo ? [inReplyTo] : [])].filter(Boolean)));
 
     return {
       inReplyTo,
-      references: inReplyTo ? [inReplyTo] : []
+      references
     };
   }
 
@@ -1173,6 +1261,17 @@ export class MailService {
       .get(accountId, remoteReference) as { threadId: string } | undefined;
   }
 
+  private findThreadIdByRemoteReferences(accountId: string, references: string[]) {
+    for (const reference of references) {
+      const thread = this.findThreadIdByRemoteReference(accountId, reference);
+      if (thread) {
+        return thread;
+      }
+    }
+
+    return undefined;
+  }
+
   listSyncFolderNames(accountId: string) {
     try {
       return (
@@ -1192,6 +1291,61 @@ export class MailService {
       console.error("Failed to list sync folders.", error);
       return [];
     }
+  }
+
+  searchMessages(accountId: string, query: string) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    const searchPattern = `%${normalizedQuery.replace(/\s+/g, "%")}%`;
+    return this.database
+      .prepare(
+        `
+          SELECT
+            id,
+            thread_id AS threadId,
+            account_id AS accountId,
+            folder_id AS folderId,
+            sender,
+            subject,
+            preview,
+            label,
+            time,
+            sent_at AS sentAt,
+            unread,
+            flagged,
+            trust
+          FROM messages
+          WHERE account_id = ?
+            AND (
+              sender LIKE ? COLLATE NOCASE
+              OR subject LIKE ? COLLATE NOCASE
+              OR preview LIKE ? COLLATE NOCASE
+              OR body LIKE ? COLLATE NOCASE
+              OR address LIKE ? COLLATE NOCASE
+              OR to_text LIKE ? COLLATE NOCASE
+              OR cc_text LIKE ? COLLATE NOCASE
+            )
+          ORDER BY COALESCE(remote_uid, 0) DESC, created_at DESC
+        `
+      )
+      .all(
+        accountId,
+        searchPattern,
+        searchPattern,
+        searchPattern,
+        searchPattern,
+        searchPattern,
+        searchPattern,
+        searchPattern
+      )
+      .map((row) => ({
+        ...row,
+        unread: Boolean(row.unread),
+        flagged: Boolean(row.flagged)
+      })) as WorkspaceSnapshot["messages"];
   }
 
   private ensureFolder(accountId: string, name: string, kind: WorkspaceSnapshot["folders"][number]["kind"], source: "remote" | "local") {
@@ -1368,8 +1522,8 @@ export class MailService {
       INSERT INTO messages (
         id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
         unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode,
-        to_text, cc_text, remote_message_ref, remote_uid, remote_sequence, remote_folder_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        to_text, cc_text, remote_message_ref, in_reply_to, references_json, remote_uid, remote_sequence, remote_folder_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateMessage = this.database.prepare(`
       UPDATE messages
@@ -1387,6 +1541,8 @@ export class MailService {
         verified = ?,
         to_text = ?,
         cc_text = ?,
+        in_reply_to = ?,
+        references_json = ?,
         remote_uid = ?,
         remote_sequence = ?,
         remote_folder_name = ?
@@ -1427,6 +1583,8 @@ export class MailService {
           1,
           header.to ?? "",
           header.cc ?? "",
+          header.inReplyTo,
+          JSON.stringify(header.references),
           header.uid,
           header.sequence,
           folderName,
@@ -1436,8 +1594,10 @@ export class MailService {
       }
 
       const createdAt = nowIso();
-      const replyThread = this.findThreadIdByRemoteReference(accountId, header.inReplyTo);
-      const relatedThread = replyThread ?? this.findExistingThreadBySubject(accountId, header.subject);
+      const relatedThread =
+        this.findThreadIdByRemoteReferences(accountId, header.references) ??
+        this.findThreadIdByRemoteReference(accountId, header.inReplyTo) ??
+        this.findExistingThreadBySubject(accountId, header.subject);
       const threadId = relatedThread?.threadId ?? makeId("thread");
       const messageId = makeId("message");
       if (relatedThread) {
@@ -1467,6 +1627,8 @@ export class MailService {
         header.to ?? "",
         header.cc ?? "",
         header.remoteMessageRef,
+        header.inReplyTo,
+        JSON.stringify(header.references),
         header.uid,
         header.sequence,
         folderName,
@@ -1626,7 +1788,7 @@ export class MailService {
           accountId,
           vaultAvailable
             ? this.input.cipher.encryptString(JSON.stringify({ password: input.password }))
-            : serializeFallbackSecret(input.password),
+            : this.encryptFallbackSecret(input.password),
           createdAt
         );
     }
@@ -1636,7 +1798,7 @@ export class MailService {
       .run(
         makeId("ledger"),
         "Account added to local workspace",
-        `${input.address} was stored in the main-process account registry. ${vaultAvailable ? "Secret material was encrypted with the OS vault before persistence." : "The OS vault is unavailable in this environment, so DejAzmach stored the password in its local fallback secret store."}`,
+        `${input.address} was stored in the main-process account registry. ${vaultAvailable ? "Secret material was encrypted with the OS vault before persistence." : "The OS vault is unavailable in this environment, so DejAzmach stored the password in its local encrypted fallback secret store."}`,
         displayTime(),
         vaultAvailable ? "info" : "notice",
         createdAt
@@ -1740,8 +1902,8 @@ export class MailService {
       .prepare(`
         INSERT INTO messages (
           id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, in_reply_to, references_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         makeId("message"),
@@ -1764,6 +1926,8 @@ export class MailService {
         htmlBody ? "plain" : "plain",
         input.to || "",
         input.cc ?? "",
+        replyMetadata.inReplyTo ?? null,
+        JSON.stringify(replyMetadata.references),
         createdAt
       );
 
@@ -2106,8 +2270,8 @@ export class MailService {
       .prepare(`
         INSERT INTO messages (
           id, thread_id, account_id, folder_id, sender, address, subject, preview, label, time,
-          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          unread, trust, sent_at, body, html_body, attachments_json, verified, content_mode, to_text, cc_text, in_reply_to, references_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
         .run(
           makeId("message"),
@@ -2130,6 +2294,8 @@ export class MailService {
           "plain",
           input.to.trim(),
           input.cc?.trim() ?? "",
+          replyMetadata.inReplyTo ?? null,
+          JSON.stringify(replyMetadata.references),
           createdAt
         );
 
@@ -2166,6 +2332,41 @@ export class MailService {
   async syncFolder(input: SyncFolderInput, context: WorkspaceContext) {
     const result = await this.syncFolderWithResult(input, context, { recordActivity: true });
     return result.snapshot;
+  }
+
+  async batchMutateMessages(
+    input: { accountId: string; messageIds: string[]; action: "archive" | "delete" | "spam" | "markUnread" },
+    context: WorkspaceContext
+  ) {
+    const uniqueMessageIds = Array.from(new Set(input.messageIds)).filter(Boolean);
+    const failures: Array<{ messageId: string; error: string }> = [];
+    const succeededIds: string[] = [];
+    let snapshot = this.getWorkspaceSnapshot(context);
+
+    for (const messageId of uniqueMessageIds) {
+      try {
+        snapshot =
+          input.action === "archive"
+            ? await this.archiveMessage({ accountId: input.accountId, messageId }, context)
+            : input.action === "delete"
+              ? await this.deleteMessage({ accountId: input.accountId, messageId }, context)
+              : input.action === "spam"
+                ? await this.markSpam({ accountId: input.accountId, messageId }, context)
+                : await this.markUnread({ accountId: input.accountId, messageId }, context);
+        succeededIds.push(messageId);
+      } catch (error) {
+        failures.push({
+          messageId,
+          error: error instanceof Error ? error.message : "Message action failed."
+        });
+      }
+    }
+
+    return {
+      snapshot,
+      succeededIds,
+      failures
+    };
   }
 
   async fetchMessageBody(input: FetchMessageBodyInput, _context: WorkspaceContext): Promise<FetchMessageBodyResult> {

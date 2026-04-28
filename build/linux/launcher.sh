@@ -16,4 +16,4 @@ if [ -f "$SANDBOX_BIN" ]; then
   fi
 fi
 
-exec "$APP_BIN" --no-sandbox "$@"
+exec "$APP_BIN" --disable-setuid-sandbox "$@"

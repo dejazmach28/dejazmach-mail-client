@@ -42,6 +42,7 @@ test("parseImapFetchEnvelope extracts inbox header fields", () => {
       uid: 2042,
       remoteMessageRef: "<message-42@example.com>",
       inReplyTo: "",
+      references: [],
       subject: "Weekly report",
       fromName: "Jane Sender",
       fromAddress: "jane@example.com",

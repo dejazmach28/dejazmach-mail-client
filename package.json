@@ -53,10 +53,6 @@
     "linux": {
       "icon": "assets/icons/256x256.png",
       "maintainer": "DejAzmach <hello@dejazmach.app>",
-      "executableArgs": [
-        "--no-sandbox",
-        "--disable-setuid-sandbox"
-      ],
       "target": [
         {
           "target": "AppImage",

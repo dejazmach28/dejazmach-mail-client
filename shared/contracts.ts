@@ -190,6 +190,11 @@ export type SyncFolderInput = {
   folderName: string;
 };
 
+export type SearchMessagesInput = {
+  accountId: string;
+  query: string;
+};
+
 export type MessageMutationInput = {
   accountId: string;
   messageId: string;
@@ -205,6 +210,25 @@ export type ToggleFlagInput = {
   accountId: string;
   messageId: string;
   flagged: boolean;
+};
+
+export type BatchMessageAction = "archive" | "delete" | "spam" | "markUnread";
+
+export type BatchMessageInput = {
+  accountId: string;
+  messageIds: string[];
+  action: BatchMessageAction;
+};
+
+export type BatchMessageFailure = {
+  messageId: string;
+  error: string;
+};
+
+export type BatchMessageResult = {
+  snapshot: WorkspaceSnapshot;
+  succeededIds: string[];
+  failures: BatchMessageFailure[];
 };
 
 export type SaveAttachmentInput = {
@@ -285,6 +309,8 @@ export type DesktopApi = {
   sendMessage: (input: SendMessageInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   fetchMessageBody: (input: FetchMessageBodyInput) => Promise<ActionResult<FetchMessageBodyResult>>;
   syncFolder: (input: SyncFolderInput) => Promise<ActionResult<WorkspaceSnapshot>>;
+  searchMessages: (input: SearchMessagesInput) => Promise<ActionResult<MailSummary[]>>;
+  batchMutateMessages: (input: BatchMessageInput) => Promise<ActionResult<BatchMessageResult>>;
   deleteMessage: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   markRead: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;
   markUnread: (input: MessageMutationInput) => Promise<ActionResult<WorkspaceSnapshot>>;

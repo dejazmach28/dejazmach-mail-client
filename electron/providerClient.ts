@@ -23,6 +23,7 @@ export type InboxHeader = {
   uid: number;
   remoteMessageRef: string;
   inReplyTo: string;
+  references: string[];
   subject: string;
   fromName: string;
   fromAddress: string;
@@ -466,6 +467,7 @@ export const parseImapFetchEnvelope = (line: string): InboxHeader | null => {
     uid,
     remoteMessageRef: messageId || `seq:${sequence}`,
     inReplyTo,
+    references: [],
     subject,
     fromName: fromEntry.name,
     fromAddress: fromEntry.address,
@@ -528,6 +530,60 @@ const parsePreviewFetches = (lines: string[], literals: Buffer[]) => {
   }
 
   return previews;
+};
+
+const parseHeaderReferences = (value: string) => {
+  const matches = value.match(/<[^>]+>/g);
+  return matches ? Array.from(new Set(matches)) : [];
+};
+
+const parseSimpleHeaders = (value: string) => {
+  const unfolded = value.replace(/\r?\n[ \t]+/g, " ");
+  const headers = new Map<string, string>();
+
+  for (const line of unfolded.split(/\r?\n/)) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    headers.set(
+      line.slice(0, separatorIndex).trim().toLowerCase(),
+      line.slice(separatorIndex + 1).trim()
+    );
+  }
+
+  return headers;
+};
+
+const parseReferenceFetches = (lines: string[], literals: Buffer[]) => {
+  const referencesByUid = new Map<number, { inReplyTo: string; references: string[] }>();
+  let literalIndex = 0;
+
+  for (const line of lines) {
+    const match = /^\* \d+ FETCH \(UID (\d+)\b.*\{(\d+)\}$/.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+
+    const uid = Number(match[1]);
+    const literal = literals[literalIndex];
+    literalIndex += 1;
+
+    if (!literal || !uid) {
+      continue;
+    }
+
+    const headers = parseSimpleHeaders(literal.toString("utf8"));
+    const inReplyTo = headers.get("in-reply-to") ?? "";
+    const references = parseHeaderReferences(headers.get("references") ?? "");
+    referencesByUid.set(uid, {
+      inReplyTo: parseHeaderReferences(inReplyTo)[0] ?? inReplyTo,
+      references
+    });
+  }
+
+  return referencesByUid;
 };
 
 const parseImapExists = (lines: string[]) => {
@@ -1186,13 +1242,24 @@ const fetchSelectedFolderHeaders = async (socket: LineSocket, folderName: string
           `FETCH ${fetchRange} (UID BODY.PEEK[TEXT]<0.200>)`
         )
       : { lines: [], literals: [] };
+  const referenceResult =
+    fetchRange
+      ? await runImapLiteralCommand(
+          socket,
+          "I0005",
+          `FETCH ${fetchRange} (UID BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])`
+        )
+      : { lines: [], literals: [] };
   const previewsByUid = parsePreviewFetches(previewResult.lines, previewResult.literals);
+  const referencesByUid = parseReferenceFetches(referenceResult.lines, referenceResult.literals);
   const headers = headerLines
     .filter((line) => line.startsWith("* ") && line.includes(" FETCH "))
     .map((line) => parseImapFetchEnvelope(line))
     .filter((header): header is InboxHeader => Boolean(header))
     .map((header) => ({
       ...header,
+      inReplyTo: referencesByUid.get(header.uid)?.inReplyTo ?? header.inReplyTo,
+      references: referencesByUid.get(header.uid)?.references ?? [],
       preview: previewsByUid.get(header.uid) ?? ""
     }))
     .sort((left, right) => right.sequence - left.sequence);

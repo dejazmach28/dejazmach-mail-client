@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import type {
   ActionResult,
+  BatchMessageResult,
   CreateAccountInput,
   CreateDraftInput,
   FetchMessageBodyResult,
@@ -239,6 +240,7 @@ function App() {
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [activeSurface, setActiveSurface] = useState<"message" | "compose" | "settings">("message");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<WorkspaceSnapshot["messages"] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -466,17 +468,54 @@ function App() {
     () =>
       !search
         ? folderMessages
-        : accountMessages.filter((message) =>
+        : (searchResults ??
+          accountMessages.filter((message) =>
             [message.sender, message.subject, message.preview, message.label].some((value) =>
               value.toLowerCase().includes(search)
             )
-          ),
-    [accountMessages, folderMessages, search]
+          )),
+    [accountMessages, folderMessages, search, searchResults]
   );
   const selectedThread = workspace.threads.find((thread) => thread.id === selectedThreadId);
   const readerMessage = visibleMessages.find((message) => message.threadId === selectedThread?.id);
   const activeThreadMessage = selectedThread?.messages[0];
   const reauthAccount = workspace.accounts.find((account) => account.id === reauthAccountId);
+
+  useEffect(() => {
+    if (!search) {
+      setSearchResults(null);
+      return;
+    }
+
+    if (!window.desktopApi || !selectedAccount?.id) {
+      return;
+    }
+
+    const api = window.desktopApi;
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void api
+        .searchMessages({
+          accountId: selectedAccount.id,
+          query: searchQuery
+        })
+        .then((result) => {
+          if (!cancelled && result.ok) {
+            setSearchResults(result.data);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSearchResults(null);
+          }
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [search, searchQuery, selectedAccount?.id]);
 
   useEffect(() => {
     if (!window.desktopApi || !selectedAccount?.id || !selectedFolder?.name || !selectedFolderKey) {
@@ -753,7 +792,7 @@ function App() {
 
   const runBatchMessageAction = async (
     messageIds: string[],
-    executor: (accountId: string, messageId: string) => Promise<ActionResult<WorkspaceSnapshot>>,
+    action: "archive" | "delete" | "spam" | "markUnread",
     successMessage: string
   ) => {
     if (!window.desktopApi || !selectedAccount?.id || messageIds.length === 0) {
@@ -764,34 +803,19 @@ function App() {
     setActionNotice(null);
 
     try {
-      let nextWorkspace: WorkspaceSnapshot | null = null;
-      const failures: Array<{ id: string; error: string }> = [];
-      const succeeded: string[] = [];
-      for (const messageId of Array.from(new Set(messageIds))) {
-        try {
-          const result = await executor(selectedAccount.id, messageId);
-          if (result.data) {
-            nextWorkspace = result.data;
-          }
-          unwrapResult(result);
-          succeeded.push(messageId);
-        } catch (error) {
-          failures.push({
-            id: messageId,
-            error: error instanceof Error ? error.message : "Message action failed."
-          });
-        }
-      }
+      const result = await window.desktopApi.batchMutateMessages({
+        accountId: selectedAccount.id,
+        messageIds: Array.from(new Set(messageIds)),
+        action
+      });
+      const batchResult = unwrapResult(result) as BatchMessageResult;
+      applyWorkspace(batchResult.snapshot);
 
-      if (nextWorkspace) {
-        applyWorkspace(nextWorkspace);
-      }
-
-      if (failures.length === 0) {
+      if (batchResult.failures.length === 0) {
         showActionNotice(successMessage);
-      } else if (succeeded.length > 0) {
+      } else if (batchResult.succeededIds.length > 0) {
         showActionNotice(
-          `${succeeded.length}/${messageIds.length} messages updated. ${failures.length} failed: ${failures
+          `${batchResult.succeededIds.length}/${messageIds.length} messages updated. ${batchResult.failures.length} failed: ${batchResult.failures
             .slice(0, 2)
             .map((failure) => failure.error)
             .join(" · ")}`,
@@ -800,7 +824,7 @@ function App() {
         );
       } else {
         setActionError(
-          failures
+          batchResult.failures
             .slice(0, 3)
             .map((failure) => failure.error)
             .join(" · ")
@@ -808,8 +832,8 @@ function App() {
       }
 
       return {
-        failed: failures.map((failure) => failure.id),
-        succeeded
+        failed: batchResult.failures.map((failure) => failure.messageId),
+        succeeded: batchResult.succeededIds
       };
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Message action failed.");
@@ -1182,28 +1206,28 @@ function App() {
               onArchiveSelection={(messageIds) =>
                 runBatchMessageAction(
                   messageIds,
-                  async (accountId, messageId) => window.desktopApi!.archiveMessage({ accountId, messageId }),
+                  "archive",
                   messageIds.length === 1 ? "Message archived." : `${messageIds.length} messages archived.`
                 )
               }
               onDeleteSelection={(messageIds) =>
                 runBatchMessageAction(
                   messageIds,
-                  async (accountId, messageId) => window.desktopApi!.deleteMessage({ accountId, messageId }),
+                  "delete",
                   messageIds.length === 1 ? "Message deleted." : `${messageIds.length} messages deleted.`
                 )
               }
               onMarkSpamSelection={(messageIds) =>
                 runBatchMessageAction(
                   messageIds,
-                  async (accountId, messageId) => window.desktopApi!.markSpam({ accountId, messageId }),
+                  "spam",
                   messageIds.length === 1 ? "Message moved to spam." : `${messageIds.length} messages moved to spam.`
                 )
               }
               onMarkUnreadSelection={(messageIds) =>
                 runBatchMessageAction(
                   messageIds,
-                  async (accountId, messageId) => window.desktopApi!.markUnread({ accountId, messageId }),
+                  "markUnread",
                   messageIds.length === 1 ? "Message marked unread." : `${messageIds.length} messages marked unread.`
                 )
               }
