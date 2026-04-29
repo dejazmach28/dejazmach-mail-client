@@ -1098,32 +1098,7 @@ function App() {
 
       {!hasAccounts ? (
         <section className="welcome-shell">
-          <div className="welcome-backdrop welcome-backdrop-left" aria-hidden="true" />
-          <div className="welcome-backdrop welcome-backdrop-right" aria-hidden="true" />
-
-          <article className="welcome-copy">
-            <span className="eyebrow">DejAzmach</span>
-            <h1>Connect one mailbox, then the full desktop workspace appears.</h1>
-            <p>
-              No demo inbox. No fake folders. DejAzmach stays empty until a real account is configured
-              and verified against the server.
-            </p>
-
-            <div className="welcome-points">
-              <div className="welcome-point">
-                <strong>Server-driven folders</strong>
-                <p>IMAP folders are fetched from the host, so custom mailbox structures show up correctly.</p>
-              </div>
-              <div className="welcome-point">
-                <strong>Three-pane workflow</strong>
-                <p>After setup, the interface switches to account rail, message list, and reading pane.</p>
-              </div>
-              <div className="welcome-point">
-                <strong>Main-process secrets</strong>
-                <p>Credentials stay out of the renderer and message HTML remains blocked by default.</p>
-              </div>
-            </div>
-
+          <div className="welcome-center">
             {loadError ? <NoticeBanner message={loadError} onDismiss={() => setLoadError(null)} tone="warning" /> : null}
             {actionError ? (
               <NoticeBanner message={actionError} onDismiss={() => setActionError(null)} tone="critical" />
@@ -1131,16 +1106,13 @@ function App() {
             {actionNotice ? (
               <NoticeBanner message={actionNotice} onDismiss={() => setActionNotice(null)} tone={actionNoticeTone} />
             ) : null}
-          </article>
-
-          <div className="welcome-form">
             <OnboardingForm
               form={accountForm}
               isSavingAccount={isSavingAccount}
               onFieldChange={updateAccountForm}
               onSubmit={handleAccountSubmit}
-              subtitle="Welcome"
-              title="Configure your first account"
+              subtitle="DejAzmach"
+              title="Add your mail account"
             />
           </div>
         </section>
